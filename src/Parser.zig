@@ -197,6 +197,10 @@ fn nextSingleLeaf(self: *Parser) (mem.Allocator.Error || error{Syntax})!Node.Ind
     };
 }
 
+/// Parse arguments serparated by commas with a specified delimiter.
+///
+/// Returns an index to `extra_data` at which is the len of args followed by
+/// the node indices of the args themselves.
 fn parseCallArgs(self: *Parser, delimiter: Token.Tag) !Ast.ExtraDataIndex {
     const start = try self.appendScratch(undefined);
     while (true) {

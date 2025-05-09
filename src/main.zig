@@ -1,87 +1,56 @@
 const std = @import("std");
-const posix = std.posix;
 const mem = std.mem;
+const meta = std.meta;
+const process = std.process;
+const debug = std.debug;
 const heap = std.heap;
-const io = std.io;
-const builtin = @import("builtin");
+const log = std.log;
 
-const Ast = @import("Ast.zig");
-const State = @import("State.zig");
-const Eval = @import("Eval.zig");
+const repl = @import("repl.zig");
+const help =
+    \\Usage: {s} [command]
+    \\
+    \\Commands:
+    \\
+    \\  repl (default)  Enter a repl
+    \\  help            Print this help and exit
+    \\
+;
 
-const quit_keywords: std.StaticStringMap(void) = .initComptime(.{
-    .{ "quit", {} },
-    .{ "q", {} },
-    .{ "exit", {} },
-});
+const Command = enum {
+    repl,
+    help,
+};
 
 pub fn main() !void {
-    const gpa = heap.smp_allocator;
+    var gpa_state = if (debug.runtime_safety) heap.DebugAllocator(.{}).init else {};
+    defer if (debug.runtime_safety) {
+        _ = gpa_state.deinit();
+    };
 
-    var state: State = .init(gpa);
+    const gpa = if (debug.runtime_safety) gpa_state.allocator() else heap.smp_allocator;
 
-    const in = io.getStdIn().reader();
-    const out = io.getStdOut().writer();
-    while (true) {
-        try out.writeAll("> ");
+    var args = try process.argsWithAllocator(gpa);
+    defer args.deinit();
 
-        var bytes: std.ArrayListUnmanaged(u8) = .{};
-        defer bytes.deinit(gpa);
+    const program = args.next() orelse "miti";
+    const first_arg = args.next() orelse {
+        try repl.run(gpa);
+        return;
+    };
 
-        try in.streamUntilDelimiter(bytes.writer(gpa), '\n', null);
-        try bytes.append(gpa, 0);
+    const command = meta.stringToEnum(Command, first_arg) orelse {
+        log.info(help, .{program});
+        log.err("unknown command: {s}", .{first_arg});
+        return;
+    };
 
-        const src = bytes.items[0 .. bytes.items.len - 1 :0];
-        if (src.len == 0) continue;
-        if (quit_keywords.has(src)) break;
-
-        var ast: Ast = try .parse(gpa, src);
-        defer ast.deinit(gpa);
-
-        // DEBUG
-        defer if (builtin.mode == .Debug) {
-            for (ast.tokens.items(.tag), 0..) |tag, i| {
-                out.print("{d}: {s}\n", .{
-                    i,
-                    @tagName(tag),
-                }) catch unreachable;
-            }
-
-            out.writeByte('\n') catch unreachable;
-        };
-
-        if (ast.err) |err| {
-            const start = ast.tokens.items(.span)[err.token].start;
-            try writeError(out, err.message, start);
-
-            continue;
-        }
-
-        var eval: Eval = .init(&state, &ast);
-        defer eval.deinit();
-
-        const value = eval.eval(ast.root) catch |err| switch (err) {
-            error.OutOfMemory => |oom| return oom,
-            error.Eval => {
-                try writeError(
-                    out,
-                    eval.err.message,
-                    ast.nodeTokenSpan(eval.err.node).start,
-                );
-
-                continue;
-            },
-        };
-        if (value != .nil) try out.print("= {}\n\n", .{value});
+    switch (command) {
+        .help => {
+            log.info(help, .{program});
+        },
+        .repl => {
+            try repl.run(gpa);
+        },
     }
-}
-
-fn writeError(writer: anytype, message: []const u8, start: u32) !void {
-    try writer.writeAll("  ");
-    for (0..start) |_| {
-        try writer.writeByte(' ');
-    }
-
-    try writer.writeAll("^ ");
-    try writer.print("error: {s}\n\n", .{message});
 }
