@@ -17,6 +17,11 @@ pub const Token = struct {
         star,
         slash,
 
+        eq,
+        colon_eq,
+        at,
+        comma,
+
         lparen,
         rparen,
 
@@ -69,6 +74,17 @@ pub fn next(self: *Tokenizer) Token {
         '/' => .slash,
         '(' => .lparen,
         ')' => .rparen,
+        '=' => .eq,
+        '@' => .at,
+        ',' => .comma,
+        ':' => {
+            if (self.src[self.index] == '=') {
+                self.index += 1;
+                break :tag .colon_eq;
+            }
+
+            break :tag .invalid;
+        },
         ' ', '\t', '\n' => {
             start = self.index;
 

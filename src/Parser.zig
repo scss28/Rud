@@ -16,6 +16,9 @@ src: [:0]const u8,
 index: u32,
 tokens: Ast.Tokens.Slice,
 nodes: Ast.Nodes,
+extra_data: std.ArrayListUnmanaged(Node.Index),
+
+scratch: std.ArrayListUnmanaged(Node.Index),
 
 err: ?Ast.Error,
 
@@ -38,6 +41,7 @@ pub fn parse(gpa: mem.Allocator, src: [:0]const u8) mem.Allocator.Error!Ast {
                     .src = src,
                     .tokens = tokens.toOwnedSlice(),
                     .nodes = .{ .ptrs = undefined, .len = 0, .capacity = 0 },
+                    .extra_data = &.{},
                     .err = .{
                         .message = "invalid token",
                         .token = token_index,
@@ -57,8 +61,11 @@ pub fn parse(gpa: mem.Allocator, src: [:0]const u8) mem.Allocator.Error!Ast {
         .index = 0,
         .tokens = tokens,
         .nodes = .{},
+        .extra_data = .{},
+        .scratch = .{},
         .err = null,
     };
+    defer p.scratch.deinit(gpa);
 
     const root = p.nextNode() catch |err| switch (err) {
         error.OutOfMemory => |oom| return oom,
@@ -74,6 +81,7 @@ pub fn parse(gpa: mem.Allocator, src: [:0]const u8) mem.Allocator.Error!Ast {
         .src = src,
         .tokens = p.tokens,
         .nodes = p.nodes.toOwnedSlice(),
+        .extra_data = try p.extra_data.toOwnedSlice(gpa),
         .err = p.err,
     };
 }
@@ -132,12 +140,46 @@ fn nextNode(self: *Parser) (mem.Allocator.Error || error{Syntax})!Node.Index {
 }
 
 fn nextLeaf(self: *Parser) (mem.Allocator.Error || error{Syntax})!Node.Index {
+    const node = try self.nextSingleLeaf();
+    switch (self.currentTokenTag()) {
+        .lparen => {
+            const token = try self.assertToken(.lparen);
+            const args = try self.parseCallArgs(.rparen);
+            _ = try self.assertToken(.rparen);
+
+            return self.addNode(.{
+                .tag = .call,
+                .token = token,
+                .data = .{
+                    .lhs = node,
+                    .rhs = args,
+                },
+            });
+        },
+        else => return node,
+    }
+}
+
+fn nextSingleLeaf(self: *Parser) (mem.Allocator.Error || error{Syntax})!Node.Index {
     return switch (self.currentTokenTag()) {
-        .identifier => try self.addNode(.{
-            .tag = .identifier,
-            .token = self.eatTokenAny(),
-            .data = undefined,
-        }),
+        .identifier => {
+            const identifier_token = self.eatTokenAny();
+            const token = self.eatToken(.colon_eq) orelse return self.addNode(.{
+                .tag = .identifier,
+                .token = identifier_token,
+                .data = undefined,
+            });
+
+            const rhs = try self.nextNode();
+            return self.addNode(.{
+                .tag = .assign,
+                .token = token,
+                .data = .{
+                    .lhs = identifier_token,
+                    .rhs = rhs,
+                },
+            });
+        },
         .number => try self.addNode(.{
             .tag = .number,
             .token = self.eatTokenAny(),
@@ -147,7 +189,7 @@ fn nextLeaf(self: *Parser) (mem.Allocator.Error || error{Syntax})!Node.Index {
             _ = self.eatTokenAny();
 
             const node = try self.nextNode();
-            _ = try self.eatToken(.rparen);
+            _ = try self.assertToken(.rparen);
 
             return node;
         },
@@ -155,18 +197,51 @@ fn nextLeaf(self: *Parser) (mem.Allocator.Error || error{Syntax})!Node.Index {
     };
 }
 
-fn eatToken(self: *Parser, comptime tag: Token.Tag) error{Syntax}!Ast.TokenIndex {
-    defer self.index += 1;
-    if (self.currentTokenTag() != tag) {
+fn parseCallArgs(self: *Parser, delimiter: Token.Tag) !Ast.ExtraDataIndex {
+    const start = try self.appendScratch(undefined);
+    while (true) {
+        if (self.currentTokenTag() == delimiter) break;
+
+        const node = try self.nextNode();
+        _ = try self.appendScratch(node);
+
+        if (self.eatToken(.comma) == null) break;
+    }
+
+    const args = self.scratch.items[start..];
+    args[0] = @intCast(self.scratch.items.len - start - 1);
+
+    const index: Ast.ExtraDataIndex = @intCast(self.extra_data.items.len);
+    try self.extra_data.appendSlice(self.gpa, args);
+    self.scratch.items.len = start;
+
+    return index;
+}
+
+fn appendScratch(self: *Parser, node: Node.Index) mem.Allocator.Error!u32 {
+    const index = self.scratch.items.len;
+    try self.scratch.append(self.gpa, node);
+
+    return @intCast(index);
+}
+
+fn assertToken(self: *Parser, comptime tag: Token.Tag) error{Syntax}!Ast.TokenIndex {
+    const token = self.eatToken(tag) orelse {
         return self.throw(
             fmt.comptimePrint("expected {s}", .{@tagName(tag)}),
             self.index,
         );
-    }
-    return self.index;
+    };
+
+    return token;
 }
 
-fn eatTokenAny(self: *Parser) Ast.TokenIndex {
+inline fn eatToken(self: *Parser, comptime tag: Token.Tag) ?Ast.TokenIndex {
+    if (self.currentTokenTag() != tag) return null;
+    return self.eatTokenAny();
+}
+
+inline fn eatTokenAny(self: *Parser) Ast.TokenIndex {
     defer self.index += 1;
     return self.index;
 }
