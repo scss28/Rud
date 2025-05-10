@@ -1,7 +1,7 @@
 <h1 align="center">Rud</h1>
 <h3 align="center"><em>A simple interpreted programming language</em></h3>
 
-## Get started
+## Getting started
 ### Prerequisites
 - [Zig](https://ziglang.org) (0.14.0)
 

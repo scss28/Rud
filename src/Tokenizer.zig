@@ -26,6 +26,7 @@ pub const Token = struct {
         lparen,
         rparen,
 
+        newline,
         invalid,
         eof,
     };
@@ -77,7 +78,7 @@ pub fn next(self: *Tokenizer) Token {
                 break :tag .double_star;
             }
 
-            break :tag .double_star;
+            break :tag .star;
         },
         '/' => .slash,
         '(' => .lparen,
@@ -93,7 +94,8 @@ pub fn next(self: *Tokenizer) Token {
 
             break :tag .invalid;
         },
-        ' ', '\t', '\n' => {
+        '\n' => .newline,
+        ' ', '\t' => {
             start = self.index;
 
             defer self.index += 1;

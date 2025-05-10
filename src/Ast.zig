@@ -85,6 +85,13 @@ pub inline fn parse(
     return Parser.parse(gpa, src);
 }
 
+pub fn deinit(self: *Ast, gpa: mem.Allocator) void {
+    self.nodes.deinit(gpa);
+    self.tokens.deinit(gpa);
+
+    self.* = undefined;
+}
+
 pub inline fn nodeTag(self: *const Ast, node: Node.Index) Node.Tag {
     return self.nodes.items(.tag)[node];
 }
@@ -101,12 +108,45 @@ pub inline fn nodeToken(self: *const Ast, node: Node.Index) TokenIndex {
     return self.nodes.items(.token)[node];
 }
 
+pub inline fn nodeData(self: *const Ast, node: Node.Index) Node.Data {
+    return self.nodes.items(.data)[node];
+}
+
 pub inline fn nodeTokenSpan(self: *const Ast, node: Node.Index) Span {
     return self.tokenSpan(self.nodeToken(node));
 }
 
 pub inline fn nodeTokenSlice(self: *const Ast, node: Node.Index) []const u8 {
     return self.tokenSlice(self.nodeToken(node));
+}
+
+pub fn nodeSpan(self: *const Ast, node: Node.Index) Span {
+    switch (self.nodeTag(node)) {
+        .identifier, .number => {
+            return self.nodeTokenSpan(node);
+        },
+        .add, .sub, .mul, .pow, .div => {
+            const data = self.nodeData(node);
+            return .{
+                .start = self.nodeSpan(data.lhs).start,
+                .end = self.nodeSpan(data.rhs).end,
+            };
+        },
+        .assign => {
+            const data = self.nodeData(node);
+            return .{
+                .start = self.tokenSpan(data.lhs).start,
+                .end = self.nodeSpan(data.rhs).end,
+            };
+        },
+        .call => {
+            const data = self.nodeData(node);
+            return .{
+                .start = self.tokenSpan(data.lhs).start,
+                .end = self.nodeSpan(data.rhs).end,
+            };
+        },
+    }
 }
 
 pub inline fn extraSlice(
@@ -118,22 +158,20 @@ pub inline fn extraSlice(
 }
 
 pub fn full(self: *const Ast, node: Node.Index) Node.Full {
-    switch (self.nodes.items(.tag)[node]) {
+    switch (self.nodeTag(node)) {
         inline .identifier, .number => |tag| {
-            const token = self.nodes.items(.token)[node];
-            const slice = self.tokenSlice(token);
-
+            const slice = self.nodeTokenSlice(node);
             return @unionInit(Node.Full, @tagName(tag), slice);
         },
         inline .add, .sub, .mul, .pow, .div => |tag| {
-            const data = self.nodes.items(.data)[node];
+            const data = self.nodeData(node);
             return @unionInit(Node.Full, @tagName(tag), .{
                 .lhs = data.lhs,
                 .rhs = data.rhs,
             });
         },
         .assign => {
-            const data = self.nodes.items(.data)[node];
+            const data = self.nodeData(node);
             const identifier = self.tokenSlice(data.lhs);
 
             return .{ .assign = .{
@@ -142,7 +180,7 @@ pub fn full(self: *const Ast, node: Node.Index) Node.Full {
             } };
         },
         .call => {
-            const data = self.nodes.items(.data)[node];
+            const data = self.nodeData(node);
             const args = self.extraSlice(data.rhs);
 
             return .{ .call = .{
@@ -151,11 +189,4 @@ pub fn full(self: *const Ast, node: Node.Index) Node.Full {
             } };
         },
     }
-}
-
-pub fn deinit(self: *Ast, gpa: mem.Allocator) void {
-    self.nodes.deinit(gpa);
-    self.tokens.deinit(gpa);
-
-    self.* = undefined;
 }

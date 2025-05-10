@@ -56,7 +56,7 @@ pub fn eval(self: *Eval, node: Ast.Node.Index) EvalError!State.Value {
 
             const num = switch (tag) {
                 .add => lhs + rhs,
-               .sub => lhs - rhs,
+                .sub => lhs - rhs,
                 .mul => lhs * rhs,
                 .pow => math.pow(State.Float, lhs, rhs),
                 .div => lhs / rhs,

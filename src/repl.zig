@@ -29,8 +29,11 @@ pub fn run(gpa: mem.Allocator) !void {
         var bytes: std.ArrayListUnmanaged(u8) = .{};
         defer bytes.deinit(gpa);
 
-        try in.streamUntilDelimiter(bytes.writer(gpa), '\n', null);
+        const delimiter = if (builtin.os.tag == .windows) '\r' else '\n';
+        try in.streamUntilDelimiter(bytes.writer(gpa), delimiter, null);
         try bytes.append(gpa, 0);
+
+        if (builtin.os.tag == .windows) _ = try in.readByte();
 
         const src = bytes.items[0 .. bytes.items.len - 1 :0];
         if (src.len == 0) continue;
@@ -61,7 +64,7 @@ pub fn run(gpa: mem.Allocator) !void {
         const value = eval.eval(ast.root) catch |err| switch (err) {
             error.OutOfMemory => |oom| return oom,
             error.Eval => {
-                const span = ast.nodeTokenSpan(eval.err.node);
+                const span = ast.nodeSpan(eval.err.node);
                 try writeError(out, eval.err.message, span);
 
                 continue;

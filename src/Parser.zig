@@ -143,9 +143,9 @@ fn nextLeaf(self: *Parser) (mem.Allocator.Error || error{Syntax})!Node.Index {
     const node = try self.nextSingleLeaf();
     switch (self.currentTokenTag()) {
         .lparen => {
-            const token = try self.assertToken(.lparen);
+            _ = try self.assertToken(.lparen);
             const args = try self.parseCallArgs(.rparen);
-            _ = try self.assertToken(.rparen);
+            const token = try self.assertToken(.rparen);
 
             return self.addNode(.{
                 .tag = .call,

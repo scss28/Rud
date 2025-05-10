@@ -16,10 +16,12 @@ eval_arena: heap.ArenaAllocator,
 pub const Float = f64;
 pub const Value = union(Tag) {
     num: Float,
+    str: *Str,
     nil,
 
     pub const Tag = enum {
         num,
+        str,
         nil,
     };
 
@@ -31,9 +33,42 @@ pub const Value = union(Tag) {
     ) !void {
         switch (self) {
             .num => |num| try writer.print("{d}", .{num}),
+            .str => |str| try writer.print("{s}", .{str.slice()}),
             .nil => try writer.writeAll("nil"),
         }
     }
+
+    pub const Str = packed struct {
+        len: u32,
+        capacity: u32,
+        data: void,
+
+        pub fn create(
+            gpa: mem.Allocator,
+            init_str: []const u8,
+        ) mem.Allocator.Error!*Str {
+            const bytes = try gpa.allocWithOptions(
+                u8,
+                @sizeOf(Str) + init_str.len,
+                @alignOf(u32),
+                null,
+            );
+
+            const ptr: *Str = @ptrCast(bytes);
+            ptr.* = .{
+                .len = init_str.len,
+                .capacity = init_str.len,
+                .data = {},
+            };
+            @memcpy(ptr.slice(), init_str);
+
+            return ptr;
+        }
+
+        pub fn slice(self: *Str) []u8 {
+            return @as([*]u8, @alignCast(@ptrCast(&self.data)))[0..self.len];
+        }
+    };
 };
 
 pub inline fn init(gpa: mem.Allocator) State {
