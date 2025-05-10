@@ -45,6 +45,12 @@ pub inline fn init(gpa: mem.Allocator) State {
     };
 }
 
+pub fn deinit(self: *State) void {
+    self.string_bytes.deinit(self.gpa);
+    self.vars.deinit(self.gpa);
+    self.eval_arena.deinit();
+}
+
 pub fn setVar(
     self: *State,
     name: []const u8,
@@ -69,9 +75,4 @@ pub fn getVar(self: *State, name: []const u8) ?Value {
         name,
         hash_map.StringIndexAdapter{ .bytes = &self.string_bytes },
     );
-}
-
-pub fn deinit(self: *State) void {
-    self.string_bytes.deinit(self.gpa);
-    self.vars.deinit(self.gpa);
 }

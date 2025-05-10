@@ -6,6 +6,7 @@ const heap = std.heap;
 const io = std.io;
 const builtin = @import("builtin");
 
+const Span = @import("Span.zig");
 const Ast = @import("Ast.zig");
 const State = @import("State.zig");
 const Eval = @import("Eval.zig");
@@ -18,6 +19,7 @@ const quit_keywords: std.StaticStringMap(void) = .initComptime(.{
 
 pub fn run(gpa: mem.Allocator) !void {
     var state: State = .init(gpa);
+    defer state.deinit();
 
     const in = io.getStdIn().reader();
     const out = io.getStdOut().writer();
@@ -47,8 +49,8 @@ pub fn run(gpa: mem.Allocator) !void {
         };
 
         if (ast.err) |err| {
-            const start = ast.tokens.items(.span)[err.token].start;
-            try writeError(out, err.message, start);
+            const span = ast.tokenSpan(err.token);
+            try writeError(out, err.message, span);
 
             continue;
         }
@@ -59,8 +61,8 @@ pub fn run(gpa: mem.Allocator) !void {
         const value = eval.eval(ast.root) catch |err| switch (err) {
             error.OutOfMemory => |oom| return oom,
             error.Eval => {
-                const start = ast.nodeTokenSpan(eval.err.node).start;
-                try writeError(out, eval.err.message, start);
+                const span = ast.nodeTokenSpan(eval.err.node);
+                try writeError(out, eval.err.message, span);
 
                 continue;
             },
@@ -69,10 +71,10 @@ pub fn run(gpa: mem.Allocator) !void {
     }
 }
 
-fn writeError(writer: anytype, message: []const u8, start: u32) !void {
+fn writeError(writer: anytype, message: []const u8, span: Span) !void {
     try writer.writeAll("  ");
-    for (0..start) |_| try writer.writeByte(' ');
+    for (0..span.start) |_| try writer.writeByte(' ');
+    for (0..span.end - span.start) |_| try writer.writeByte('^');
 
-    try writer.writeAll("^ ");
-    try writer.print("error: {s}\n\n", .{message});
+    try writer.print(" error: {s}\n\n", .{message});
 }

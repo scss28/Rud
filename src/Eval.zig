@@ -1,6 +1,7 @@
 const std = @import("std");
 const mem = std.mem;
 const heap = std.heap;
+const math = std.math;
 const meta = std.meta;
 const fmt = std.fmt;
 
@@ -49,14 +50,15 @@ pub fn eval(self: *Eval, node: Ast.Node.Index) EvalError!State.Value {
             const num = fmt.parseFloat(f32, slice) catch unreachable;
             return .{ .num = num };
         },
-        inline .add, .sub, .mul, .div => |binop, tag| {
+        inline .add, .sub, .mul, .pow, .div => |binop, tag| {
             const lhs = try self.evalExpect(binop.lhs, .num);
             const rhs = try self.evalExpect(binop.rhs, .num);
 
             const num = switch (tag) {
                 .add => lhs + rhs,
-                .sub => lhs - rhs,
+               .sub => lhs - rhs,
                 .mul => lhs * rhs,
+                .pow => math.pow(State.Float, lhs, rhs),
                 .div => lhs / rhs,
                 else => unreachable,
             };
@@ -143,20 +145,6 @@ const builtin_map: std.StaticStringMap(*const Builtin) = blk: {
 };
 
 const builtins = struct {
-    const math = std.math;
-
-    pub fn pow(
-        env: *Eval,
-        args: []const Ast.Node.Index,
-    ) EvalError!State.Value {
-        try env.assertExpectedLen(args.len, 2, env.ast.root);
-
-        const x = try env.evalExpect(args[0], .num);
-        const n = try env.evalExpect(args[1], .num);
-
-        return .{ .num = math.pow(State.Float, x, n) };
-    }
-
     pub fn lerp(
         env: *Eval,
         args: []const Ast.Node.Index,

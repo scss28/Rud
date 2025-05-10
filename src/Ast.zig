@@ -38,6 +38,7 @@ pub const Node = struct {
         add,
         sub,
         mul,
+        pow,
         div,
         assign,
         call,
@@ -70,6 +71,7 @@ pub const Node = struct {
         add: Binop,
         sub: Binop,
         mul: Binop,
+        pow: Binop,
         div: Binop,
         assign: Assign,
         call: Call,
@@ -123,7 +125,7 @@ pub fn full(self: *const Ast, node: Node.Index) Node.Full {
 
             return @unionInit(Node.Full, @tagName(tag), slice);
         },
-        inline .add, .sub, .mul, .div => |tag| {
+        inline .add, .sub, .mul, .pow, .div => |tag| {
             const data = self.nodes.items(.data)[node];
             return @unionInit(Node.Full, @tagName(tag), .{
                 .lhs = data.lhs,

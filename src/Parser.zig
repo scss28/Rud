@@ -73,7 +73,7 @@ pub fn parse(gpa: mem.Allocator, src: [:0]const u8) mem.Allocator.Error!Ast {
     };
 
     if (p.err == null and p.currentTokenTag() != .eof) {
-        p.throw("expected end of expression", p.index) catch {};
+        p.throw("unexpected token", p.index) catch {};
     }
 
     return .{
@@ -94,11 +94,11 @@ const op_map: std.EnumMap(Token.Tag, OpInfo) = .init(.{
 
     .star = .{ 2, .mul },
     .slash = .{ 2, .div },
+    .double_star = .{ 3, .pow },
 });
 
 fn nextNode(self: *Parser) (mem.Allocator.Error || error{Syntax})!Node.Index {
     var node = try self.nextLeaf();
-
     var last_prec: Prec = 255;
     while (true) {
         const token_tag = self.currentTokenTag();
@@ -193,7 +193,7 @@ fn nextSingleLeaf(self: *Parser) (mem.Allocator.Error || error{Syntax})!Node.Ind
 
             return node;
         },
-        else => self.throw("unexpected token", self.index),
+        else => self.throw("expected an expression", self.index),
     };
 }
 

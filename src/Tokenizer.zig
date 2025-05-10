@@ -15,6 +15,7 @@ pub const Token = struct {
         plus,
         minus,
         star,
+        double_star,
         slash,
 
         eq,
@@ -70,7 +71,14 @@ pub fn next(self: *Tokenizer) Token {
         },
         '+' => .plus,
         '-' => .minus,
-        '*' => .star,
+        '*' => {
+            if (self.src[self.index] == '*') {
+                self.index += 1;
+                break :tag .double_star;
+            }
+
+            break :tag .double_star;
+        },
         '/' => .slash,
         '(' => .lparen,
         ')' => .rparen,
