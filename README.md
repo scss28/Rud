@@ -1,5 +1,5 @@
 <h1 align="center">Rud</h1>
-<h3 align="center"><em>A simple interpreted programming language</em></h3>
+<h3 align="center">A language</h3>
 
 ## Getting started
 ### Prerequisites
