@@ -1,4 +1,5 @@
 <h1 align="center">Rud</h1>
+<h3 align="center"><em>A simple interpreted programming language</em></h3>
 
 ## Get started
 ### Prerequisites
@@ -24,13 +25,13 @@ zig build --help
 | `nil` | Represents no value, returned by expressions such as variable assignment |
 
 ### Operators
-| Name           | Syntax   | Description                    |   |
-|----------------|----------|--------------------------------|---|
-| Addition       | `a + b`  | Add two numbers                |   |
-| Subtraction    | `a - b`  | Subtract two numbers           |   |
-| Multiplication | `a * b`  | Multiply two numbers           |   |
-| Division       | `a / b`  | Divide one number by the other |   |
-| Power          | `a ** b` | Raise one number to some power |   |
+| Name           | Syntax   | Description                    |
+|----------------|----------|--------------------------------|
+| Addition       | `a + b`  | Add two numbers                |
+| Subtraction    | `a - b`  | Subtract two numbers           |
+| Multiplication | `a * b`  | Multiply two numbers           |
+| Division       | `a / b`  | Divide one number by the other |
+| Power          | `a ** b` | Raise one number to some power |
 
 ### Builtin Functions
 | Name            | Description                               |
