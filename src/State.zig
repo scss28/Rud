@@ -8,8 +8,8 @@ const Ast = @import("Ast.zig");
 const State = @This();
 
 gpa: mem.Allocator,
-string_bytes: std.ArrayListUnmanaged(u8),
-vars: std.AutoHashMapUnmanaged(u32, Value),
+arena_state: heap.ArenaAllocator,
+vars: std.StringHashMapUnmanaged(Value),
 
 eval_arena: heap.ArenaAllocator,
 
@@ -74,14 +74,14 @@ pub const Value = union(Tag) {
 pub inline fn init(gpa: mem.Allocator) State {
     return .{
         .gpa = gpa,
-        .string_bytes = .{},
+        .arena_state = .init(gpa),
         .vars = .{},
         .eval_arena = .init(gpa),
     };
 }
 
 pub fn deinit(self: *State) void {
-    self.string_bytes.deinit(self.gpa);
+    self.arena_state.deinit();
     self.vars.deinit(self.gpa);
     self.eval_arena.deinit();
 }
@@ -91,23 +91,10 @@ pub fn setVar(
     name: []const u8,
     value: Value,
 ) mem.Allocator.Error!void {
-    const res = try self.vars.getOrPutAdapted(
-        self.gpa,
-        name,
-        std.hash_map.StringIndexAdapter{ .bytes = &self.string_bytes },
-    );
-
+    const res = try self.vars.getOrPut(self.gpa, name);
     if (!res.found_existing) {
-        res.key_ptr.* = @intCast(self.string_bytes.items.len);
-        try self.string_bytes.appendSlice(self.gpa, name);
+        res.key_ptr.* = try self.arena_state.allocator().dupe(u8, name);
     }
 
     res.value_ptr.* = value;
-}
-
-pub fn getVar(self: *State, name: []const u8) ?Value {
-    return self.vars.getAdapted(
-        name,
-        hash_map.StringIndexAdapter{ .bytes = &self.string_bytes },
-    );
 }

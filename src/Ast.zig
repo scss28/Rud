@@ -8,14 +8,12 @@ const Token = Tokenizer.Token;
 const Parser = @import("Parser.zig");
 const Ast = @This();
 
-root: Node.Index,
-
 src: [:0]const u8,
 tokens: Tokens.Slice,
 nodes: Nodes.Slice,
 extra_data: []const u32,
 
-err: ?Error,
+errors: []Error,
 
 pub const Error = struct {
     message: []const u8,
@@ -86,8 +84,11 @@ pub inline fn parse(
 }
 
 pub fn deinit(self: *Ast, gpa: mem.Allocator) void {
-    self.nodes.deinit(gpa);
     self.tokens.deinit(gpa);
+    self.nodes.deinit(gpa);
+
+    gpa.free(self.extra_data);
+    gpa.free(self.errors);
 
     self.* = undefined;
 }
@@ -149,12 +150,14 @@ pub fn nodeSpan(self: *const Ast, node: Node.Index) Span {
     }
 }
 
-pub inline fn extraSlice(
-    self: *const Ast,
-    index: ExtraDataIndex,
-) []const Node.Index {
+pub inline fn extraSlice(self: *const Ast, index: ExtraDataIndex) []const Node.Index {
     const len = self.extra_data[index];
     return self.extra_data[index + 1 .. index + 1 + len];
+}
+
+pub inline fn rootNodes(self: *const Ast) []const Node.Index {
+    const data = self.nodeData(0);
+    return self.extra_data[data.lhs..data.rhs];
 }
 
 pub fn full(self: *const Ast, node: Node.Index) Node.Full {

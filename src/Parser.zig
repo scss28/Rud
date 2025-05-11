@@ -20,9 +20,10 @@ extra_data: std.ArrayListUnmanaged(Node.Index),
 
 scratch: std.ArrayListUnmanaged(Node.Index),
 
-err: ?Ast.Error,
+errors: std.ArrayListUnmanaged(Ast.Error),
 
 pub fn parse(gpa: mem.Allocator, src: [:0]const u8) mem.Allocator.Error!Ast {
+    var errors: std.ArrayListUnmanaged(Ast.Error) = .{};
     const tokens = blk: {
         var tokens: std.MultiArrayList(Token) = .{};
         var tokenizer: Tokenizer = .{
@@ -35,18 +36,10 @@ pub fn parse(gpa: mem.Allocator, src: [:0]const u8) mem.Allocator.Error!Ast {
             try tokens.append(gpa, token);
 
             if (token.tag == .invalid) {
-                const token_index: u32 = @intCast(tokens.len - 1);
-                return .{
-                    .root = undefined,
-                    .src = src,
-                    .tokens = tokens.toOwnedSlice(),
-                    .nodes = .{ .ptrs = undefined, .len = 0, .capacity = 0 },
-                    .extra_data = &.{},
-                    .err = .{
-                        .message = "invalid token",
-                        .token = token_index,
-                    },
-                };
+                try errors.append(gpa, .{
+                    .message = "invalid token",
+                    .token = @intCast(tokens.len - 1),
+                });
             }
 
             if (token.tag == .eof) break;
@@ -54,6 +47,16 @@ pub fn parse(gpa: mem.Allocator, src: [:0]const u8) mem.Allocator.Error!Ast {
 
         break :blk tokens.toOwnedSlice();
     };
+
+    if (errors.items.len > 0) {
+        return .{
+            .src = src,
+            .tokens = tokens,
+            .nodes = .{ .ptrs = undefined, .len = 0, .capacity = 0 },
+            .extra_data = &.{},
+            .errors = try errors.toOwnedSlice(gpa),
+        };
+    }
 
     var p: Parser = .{
         .gpa = gpa,
@@ -63,26 +66,64 @@ pub fn parse(gpa: mem.Allocator, src: [:0]const u8) mem.Allocator.Error!Ast {
         .nodes = .{},
         .extra_data = .{},
         .scratch = .{},
-        .err = null,
+        .errors = errors,
     };
     defer p.scratch.deinit(gpa);
 
-    const root = p.nextNode() catch |err| switch (err) {
-        error.OutOfMemory => |oom| return oom,
-        error.Syntax => undefined,
-    };
+    const root = try p.addNode(undefined);
+    outer: while (p.currentTokenTag() != .eof) {
+        while (p.eatToken(.newline)) |_| {}
 
-    if (p.err == null and p.currentTokenTag() != .eof) {
-        p.throw("unexpected token", p.index) catch {};
+        const node = p.nextNode() catch |err| switch (err) {
+            error.OutOfMemory => |oom| return oom,
+            error.Syntax => {
+                while (true) {
+                    const token = p.eatTokenAny();
+                    switch (p.tokens.items(.tag)[token]) {
+                        .newline => break,
+                        .eof => break :outer,
+                        else => {},
+                    }
+                }
+
+                continue;
+            },
+        };
+        _ = try p.appendScratch(node);
+
+        switch (p.currentTokenTag()) {
+            .newline => {},
+            .eof => break,
+            else => {
+                const err = p.throw("expected newline", p.eatTokenAny());
+                if (err == error.OutOfMemory) return error.OutOfMemory;
+
+                while (true) {
+                    const token = p.eatTokenAny();
+                    switch (p.tokens.items(.tag)[token]) {
+                        .newline => break,
+                        .eof => break :outer,
+                        else => {},
+                    }
+                }
+            },
+        }
     }
 
+    const start: u32 = @intCast(p.extra_data.items.len);
+    const end = start + @as(u32, @intCast(p.scratch.items.len));
+    p.nodes.items(.data)[root] = .{
+        .lhs = start,
+        .rhs = end,
+    };
+    try p.extra_data.appendSlice(gpa, p.scratch.items);
+
     return .{
-        .root = root,
         .src = src,
         .tokens = p.tokens,
         .nodes = p.nodes.toOwnedSlice(),
         .extra_data = try p.extra_data.toOwnedSlice(gpa),
-        .err = p.err,
+        .errors = try p.errors.toOwnedSlice(gpa),
     };
 }
 
@@ -229,7 +270,10 @@ fn appendScratch(self: *Parser, node: Node.Index) mem.Allocator.Error!u32 {
     return @intCast(index);
 }
 
-fn assertToken(self: *Parser, comptime tag: Token.Tag) error{Syntax}!Ast.TokenIndex {
+fn assertToken(
+    self: *Parser,
+    comptime tag: Token.Tag,
+) (error{Syntax} || mem.Allocator.Error)!Ast.TokenIndex {
     const token = self.eatToken(tag) orelse {
         return self.throw(
             fmt.comptimePrint("expected {s}", .{@tagName(tag)}),
@@ -269,11 +313,11 @@ fn throw(
     self: *Parser,
     message: []const u8,
     token: Ast.TokenIndex,
-) error{Syntax} {
-    self.err = .{
+) (error{Syntax} || mem.Allocator.Error) {
+    try self.errors.append(self.gpa, .{
         .message = message,
         .token = token,
-    };
+    });
 
     return error.Syntax;
 }

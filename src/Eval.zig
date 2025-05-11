@@ -1,5 +1,6 @@
 const std = @import("std");
 const mem = std.mem;
+const io = std.io;
 const heap = std.heap;
 const math = std.math;
 const meta = std.meta;
@@ -19,10 +20,6 @@ const Error = struct {
     message: []const u8,
 };
 
-pub const EvalError = error{
-    Eval,
-} || mem.Allocator.Error;
-
 pub inline fn init(state: *State, ast: *const Ast) Eval {
     return .{
         .state = state,
@@ -37,10 +34,13 @@ pub inline fn deinit(self: *Eval) void {
     }
 }
 
-pub fn eval(self: *Eval, node: Ast.Node.Index) EvalError!State.Value {
+pub fn eval(
+    self: *Eval,
+    node: Ast.Node.Index,
+) (error{Eval} || mem.Allocator.Error)!State.Value {
     switch (self.ast.full(node)) {
         .identifier => |slice| {
-            return self.state.getVar(slice) orelse self.throwPrint(
+            return self.state.vars.get(slice) orelse self.throwPrint(
                 node,
                 "uninitialized variable '{s}'",
                 .{slice},
@@ -74,9 +74,47 @@ pub fn eval(self: *Eval, node: Ast.Node.Index) EvalError!State.Value {
         .call => |call| {
             if (self.ast.nodeTag(call.callee) == .identifier) blk: {
                 const identifier = self.ast.nodeTokenSlice(call.callee);
-                const f = builtin_map.get(identifier) orelse break :blk;
 
-                return f(self, call.args);
+                const builtin = meta.stringToEnum(
+                    meta.DeclEnum(builtins),
+                    identifier,
+                ) orelse break :blk;
+
+                switch (builtin) {
+                    inline else => |tag| {
+                        const func = @field(builtins, @tagName(tag));
+                        const fn_info = @typeInfo(@TypeOf(func)).@"fn";
+
+                        const args_len = @typeInfo(fn_info.params[1].type.?).array.len;
+                        if (fn_info.params.len == 3) {
+                            if (call.args.len < args_len) return self.throwPrint(
+                                node,
+                                "expected at least {d} arguments got {d}",
+                                .{
+                                    args_len,
+                                    call.args,
+                                },
+                            );
+
+                            return func(
+                                self,
+                                call.args[0..args_len].*,
+                                call.args[args_len..],
+                            );
+                        } else {
+                            if (call.args.len != args_len) return self.throwPrint(
+                                node,
+                                "expected {d} arguments got {d}",
+                                .{
+                                    args_len,
+                                    call.args,
+                                },
+                            );
+
+                            return func(self, call.args[0..args_len].*);
+                        }
+                    },
+                }
             }
 
             return self.throw(call.callee, "not a function");
@@ -88,7 +126,7 @@ fn evalExpect(
     self: *Eval,
     node: Ast.Node.Index,
     comptime tag: State.Value.Tag,
-) EvalError!meta.TagPayload(State.Value, tag) {
+) (error{Eval} || mem.Allocator.Error)!meta.TagPayload(State.Value, tag) {
     const value = try self.eval(node);
     return switch (value) {
         tag => |v| v,
@@ -121,40 +159,33 @@ fn throwPrint(
     return self.throw(node, message);
 }
 
-fn assertExpectedLen(
-    self: *Eval,
-    len: usize,
-    comptime expected_len: usize,
-    node: Ast.Node.Index,
-) (mem.Allocator.Error || error{Eval})!void {
-    if (len == expected_len) return;
-    return self.throwPrint(node, "expected {d} arguments got {d}", .{
-        expected_len,
-        len,
-    });
-}
-
-const Builtin = fn (*Eval, []const Ast.Node.Index) EvalError!State.Value;
-const builtin_map: std.StaticStringMap(*const Builtin) = blk: {
-    var kvs: []const struct { []const u8, Builtin } = &.{};
-    for (@typeInfo(builtins).@"struct".decls) |decl| {
-        kvs = kvs ++ .{.{ decl.name, @field(builtins, decl.name) }};
-    }
-
-    break :blk .initComptime(kvs);
-};
-
 const builtins = struct {
     pub fn lerp(
         env: *Eval,
-        args: []const Ast.Node.Index,
-    ) EvalError!State.Value {
-        try env.assertExpectedLen(args.len, 3, env.ast.root);
-
+        args: [3]Ast.Node.Index,
+    ) (error{Eval} || mem.Allocator.Error)!State.Value {
         const a = try env.evalExpect(args[0], .num);
         const b = try env.evalExpect(args[1], .num);
         const t = try env.evalExpect(args[2], .num);
 
         return .{ .num = math.lerp(a, b, t) };
+    }
+
+    pub fn max(
+        env: *Eval,
+        args: [2]Ast.Node.Index,
+        varargs: []const Ast.Node.Index,
+    ) (error{Eval} || mem.Allocator.Error)!State.Value {
+        var mx = try env.evalExpect(args[0], .num);
+
+        const arg2 = try env.evalExpect(args[1], .num);
+        if (arg2 > mx) mx = arg2;
+
+        for (varargs) |node| {
+            const arg = try env.evalExpect(node, .num);
+            if (arg > mx) mx = arg;
+        }
+
+        return .{ .num = mx };
     }
 };

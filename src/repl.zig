@@ -51,9 +51,9 @@ pub fn run(gpa: mem.Allocator) !void {
             out.writeByte('\n') catch unreachable;
         };
 
-        if (ast.err) |err| {
-            const span = ast.tokenSpan(err.token);
-            try writeError(out, err.message, span);
+        if (ast.errors.len > 0) {
+            const err = ast.errors[0];
+            try writeError(out, err.message, ast.tokenSpan(err.token));
 
             continue;
         }
@@ -61,7 +61,8 @@ pub fn run(gpa: mem.Allocator) !void {
         var eval: Eval = .init(&state, &ast);
         defer eval.deinit();
 
-        const value = eval.eval(ast.root) catch |err| switch (err) {
+        const node = ast.rootNodes()[0];
+        const value = eval.eval(node) catch |err| switch (err) {
             error.OutOfMemory => |oom| return oom,
             error.Eval => {
                 const span = ast.nodeSpan(eval.err.node);
