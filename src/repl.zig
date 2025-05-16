@@ -7,7 +7,7 @@ const io = std.io;
 const builtin = @import("builtin");
 
 const Span = @import("Span.zig");
-const Ast = @import("Ast.zig");
+const Parser = @import("Parser.zig");
 const State = @import("State.zig");
 const Eval = @import("Eval.zig");
 
@@ -39,7 +39,7 @@ pub fn run(gpa: mem.Allocator) !void {
         if (src.len == 0) continue;
         if (quit_keywords.has(src)) break;
 
-        var ast: Ast = try .parse(gpa, src);
+        var ast = try Parser.parse(gpa, src);
         defer ast.deinit(gpa);
 
         // DEBUG

@@ -1,5 +1,6 @@
 const std = @import("std");
 const mem = std.mem;
+const meta = std.meta;
 
 const Span = @import("Span.zig");
 const Tokenizer = @import("Tokenizer.zig");
@@ -7,13 +8,6 @@ const Token = Tokenizer.Token;
 
 const Parser = @import("Parser.zig");
 const Ast = @This();
-
-src: [:0]const u8,
-tokens: Tokens.Slice,
-nodes: Nodes.Slice,
-extra_data: []const u32,
-
-errors: []Error,
 
 pub const Error = struct {
     message: []const u8,
@@ -25,6 +19,13 @@ pub const Tokens = std.MultiArrayList(Token);
 pub const TokenIndex = u32;
 pub const ExtraDataIndex = u32;
 
+src: [:0]const u8,
+tokens: Tokens.Slice,
+nodes: Nodes.Slice,
+extra_data: []const u32,
+
+errors: []Error,
+
 pub const Node = struct {
     tag: Tag,
     token: TokenIndex,
@@ -32,7 +33,8 @@ pub const Node = struct {
 
     pub const Tag = enum {
         identifier,
-        number,
+        literal_int,
+        literal_float,
         add,
         sub,
         mul,
@@ -40,6 +42,7 @@ pub const Node = struct {
         div,
         assign,
         call,
+        block,
     };
 
     pub const Data = struct {
@@ -63,9 +66,13 @@ pub const Node = struct {
             callee: Node.Index,
             args: []const Node.Index,
         };
+        pub const Block = struct {
+            nodes: []const Node.Index,
+        };
 
         identifier: Slice,
-        number: Slice,
+        literal_int: Slice,
+        literal_float: Slice,
         add: Binop,
         sub: Binop,
         mul: Binop,
@@ -73,15 +80,9 @@ pub const Node = struct {
         div: Binop,
         assign: Assign,
         call: Call,
+        block: Block,
     };
 };
-
-pub inline fn parse(
-    gpa: mem.Allocator,
-    src: [:0]const u8,
-) mem.Allocator.Error!Ast {
-    return Parser.parse(gpa, src);
-}
 
 pub fn deinit(self: *Ast, gpa: mem.Allocator) void {
     self.tokens.deinit(gpa);
@@ -123,7 +124,7 @@ pub inline fn nodeTokenSlice(self: *const Ast, node: Node.Index) []const u8 {
 
 pub fn nodeSpan(self: *const Ast, node: Node.Index) Span {
     switch (self.nodeTag(node)) {
-        .identifier, .number => {
+        .identifier, .literal_int, .literal_float => {
             return self.nodeTokenSpan(node);
         },
         .add, .sub, .mul, .pow, .div => {
@@ -147,6 +148,13 @@ pub fn nodeSpan(self: *const Ast, node: Node.Index) Span {
                 .end = self.nodeSpan(data.rhs).end,
             };
         },
+        .block => {
+            const start = self.nodeTokenSpan(node).start;
+
+            const data = self.nodeData(node);
+            const end = self.tokenSpan(data.rhs).end;
+            return .{ .start = start, .end = end };
+        },
     }
 }
 
@@ -162,34 +170,41 @@ pub inline fn rootNodes(self: *const Ast) []const Node.Index {
 
 pub fn full(self: *const Ast, node: Node.Index) Node.Full {
     switch (self.nodeTag(node)) {
-        inline .identifier, .number => |tag| {
-            const slice = self.nodeTokenSlice(node);
-            return @unionInit(Node.Full, @tagName(tag), slice);
-        },
-        inline .add, .sub, .mul, .pow, .div => |tag| {
-            const data = self.nodeData(node);
-            return @unionInit(Node.Full, @tagName(tag), .{
-                .lhs = data.lhs,
-                .rhs = data.rhs,
-            });
-        },
-        .assign => {
-            const data = self.nodeData(node);
-            const identifier = self.tokenSlice(data.lhs);
+        inline else => |tag| {
+            const value: meta.TagPayload(Node.Full, tag) = switch (tag) {
+                .identifier, .literal_int, .literal_float => self.nodeTokenSlice(node),
+                .add, .sub, .mul, .pow, .div => blk: {
+                    const data = self.nodeData(node);
+                    break :blk .{
+                        .lhs = data.lhs,
+                        .rhs = data.rhs,
+                    };
+                },
+                .assign => blk: {
+                    const data = self.nodeData(node);
+                    const identifier = self.tokenSlice(data.lhs);
+                    break :blk .{
+                        .identifier = identifier,
+                        .rhs = data.rhs,
+                    };
+                },
+                .call => blk: {
+                    const data = self.nodeData(node);
+                    const args = self.extraSlice(data.rhs);
 
-            return .{ .assign = .{
-                .identifier = identifier,
-                .rhs = data.rhs,
-            } };
-        },
-        .call => {
-            const data = self.nodeData(node);
-            const args = self.extraSlice(data.rhs);
+                    break :blk .{
+                        .callee = data.lhs,
+                        .args = args,
+                    };
+                },
+                .block => blk: {
+                    const data = self.nodeData(node);
+                    const nodes = self.extraSlice(data.rhs);
+                    break :blk .{ .nodes = nodes };
+                },
+            };
 
-            return .{ .call = .{
-                .callee = data.lhs,
-                .args = args,
-            } };
+            return @unionInit(Node.Full, @tagName(tag), value);
         },
     }
 }

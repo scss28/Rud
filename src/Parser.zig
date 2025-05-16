@@ -73,6 +73,7 @@ pub fn parse(gpa: mem.Allocator, src: [:0]const u8) mem.Allocator.Error!Ast {
     const root = try p.addNode(undefined);
     outer: while (p.currentTokenTag() != .eof) {
         while (p.eatToken(.newline)) |_| {}
+        if (p.currentTokenTag() == .eof) break;
 
         const node = p.nextNode() catch |err| switch (err) {
             error.OutOfMemory => |oom| return oom,
@@ -221,8 +222,8 @@ fn nextSingleLeaf(self: *Parser) (mem.Allocator.Error || error{Syntax})!Node.Ind
                 },
             });
         },
-        .number => try self.addNode(.{
-            .tag = .number,
+        inline .literal_int, .literal_float => |tag| try self.addNode(.{
+            .tag = @field(Node.Tag, @tagName(tag)),
             .token = self.eatTokenAny(),
             .data = undefined,
         }),
@@ -233,6 +234,45 @@ fn nextSingleLeaf(self: *Parser) (mem.Allocator.Error || error{Syntax})!Node.Ind
             _ = try self.assertToken(.rparen);
 
             return node;
+        },
+        .lbrace => {
+            const token = self.eatTokenAny();
+
+            const start = try self.appendScratch(undefined);
+            while (true) {
+                while (self.eatToken(.newline) != null) {}
+                if (self.currentTokenTag() == .rbrace) break;
+
+                const node = try self.nextNode();
+                _ = try self.appendScratch(node);
+
+                switch (self.currentTokenTag()) {
+                    .eof => {
+                        return self.throw("unclosed brace", self.index);
+                    },
+                    .rbrace => break,
+                    .newline => continue,
+                    else => {
+                        const message = fmt.comptimePrint("expected {s} or {s}", .{
+                            @tagName(.rbrace),
+                            @tagName(.newline),
+                        });
+                        return self.throw(message, self.index);
+                    },
+                }
+            }
+
+            const index = try self.popScratch(start);
+            const rhs = try self.assertToken(.rbrace);
+
+            return try self.addNode(.{
+                .tag = .block,
+                .token = token,
+                .data = .{
+                    .lhs = index,
+                    .rhs = rhs,
+                },
+            });
         },
         else => self.throw("expected an expression", self.index),
     };
@@ -245,6 +285,7 @@ fn nextSingleLeaf(self: *Parser) (mem.Allocator.Error || error{Syntax})!Node.Ind
 fn parseCallArgs(self: *Parser, delimiter: Token.Tag) !Ast.ExtraDataIndex {
     const start = try self.appendScratch(undefined);
     while (true) {
+        while (self.eatToken(.newline) != null) {}
         if (self.currentTokenTag() == delimiter) break;
 
         const node = try self.nextNode();
@@ -253,6 +294,17 @@ fn parseCallArgs(self: *Parser, delimiter: Token.Tag) !Ast.ExtraDataIndex {
         if (self.eatToken(.comma) == null) break;
     }
 
+    return self.popScratch(start);
+}
+
+fn appendScratch(self: *Parser, node: Node.Index) mem.Allocator.Error!u32 {
+    const index = self.scratch.items.len;
+    try self.scratch.append(self.gpa, node);
+
+    return @intCast(index);
+}
+
+fn popScratch(self: *Parser, start: u32) mem.Allocator.Error!Ast.ExtraDataIndex {
     const args = self.scratch.items[start..];
     args[0] = @intCast(self.scratch.items.len - start - 1);
 
@@ -261,13 +313,6 @@ fn parseCallArgs(self: *Parser, delimiter: Token.Tag) !Ast.ExtraDataIndex {
     self.scratch.items.len = start;
 
     return index;
-}
-
-fn appendScratch(self: *Parser, node: Node.Index) mem.Allocator.Error!u32 {
-    const index = self.scratch.items.len;
-    try self.scratch.append(self.gpa, node);
-
-    return @intCast(index);
 }
 
 fn assertToken(
