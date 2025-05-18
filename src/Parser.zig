@@ -222,11 +222,28 @@ fn nextSingleLeaf(self: *Parser) (mem.Allocator.Error || error{Syntax})!Node.Ind
                 },
             });
         },
-        inline .literal_int, .literal_float => |tag| try self.addNode(.{
+        inline .literal_int, .literal_float, .literal_str => |tag| try self.addNode(.{
             .tag = @field(Node.Tag, @tagName(tag)),
             .token = self.eatTokenAny(),
             .data = undefined,
         }),
+        .at => {
+            self.index += 1;
+            const identifier = try self.assertToken(.identifier);
+
+            _ = try self.assertToken(.lparen);
+            const args = try self.parseCallArgs(.rparen);
+            const token = try self.assertToken(.rparen);
+
+            return self.addNode(.{
+                .tag = .builtin_call,
+                .token = token,
+                .data = .{
+                    .lhs = identifier,
+                    .rhs = args,
+                },
+            });
+        },
         .lparen => {
             _ = self.eatTokenAny();
 

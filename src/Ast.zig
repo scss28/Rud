@@ -35,6 +35,7 @@ pub const Node = struct {
         identifier,
         literal_int,
         literal_float,
+        literal_str,
         add,
         sub,
         mul,
@@ -42,6 +43,7 @@ pub const Node = struct {
         div,
         assign,
         call,
+        builtin_call,
         block,
     };
 
@@ -66,6 +68,10 @@ pub const Node = struct {
             callee: Node.Index,
             args: []const Node.Index,
         };
+        pub const BuiltinCall = struct {
+            identifier: Slice,
+            args: []const Node.Index,
+        };
         pub const Block = struct {
             nodes: []const Node.Index,
         };
@@ -73,6 +79,7 @@ pub const Node = struct {
         identifier: Slice,
         literal_int: Slice,
         literal_float: Slice,
+        literal_str: Slice,
         add: Binop,
         sub: Binop,
         mul: Binop,
@@ -80,6 +87,7 @@ pub const Node = struct {
         div: Binop,
         assign: Assign,
         call: Call,
+        builtin_call: BuiltinCall,
         block: Block,
     };
 };
@@ -124,7 +132,11 @@ pub inline fn nodeTokenSlice(self: *const Ast, node: Node.Index) []const u8 {
 
 pub fn nodeSpan(self: *const Ast, node: Node.Index) Span {
     switch (self.nodeTag(node)) {
-        .identifier, .literal_int, .literal_float => {
+        .identifier,
+        .literal_int,
+        .literal_float,
+        .literal_str,
+        => {
             return self.nodeTokenSpan(node);
         },
         .add, .sub, .mul, .pow, .div => {
@@ -144,8 +156,15 @@ pub fn nodeSpan(self: *const Ast, node: Node.Index) Span {
         .call => {
             const data = self.nodeData(node);
             return .{
+                .start = self.nodeSpan(data.lhs).start,
+                .end = self.nodeTokenSpan(node).end,
+            };
+        },
+        .builtin_call => {
+            const data = self.nodeData(node);
+            return .{
                 .start = self.tokenSpan(data.lhs).start,
-                .end = self.nodeSpan(data.rhs).end,
+                .end = self.nodeTokenSpan(node).end,
             };
         },
         .block => {
@@ -172,7 +191,11 @@ pub fn full(self: *const Ast, node: Node.Index) Node.Full {
     switch (self.nodeTag(node)) {
         inline else => |tag| {
             const value: meta.TagPayload(Node.Full, tag) = switch (tag) {
-                .identifier, .literal_int, .literal_float => self.nodeTokenSlice(node),
+                .identifier,
+                .literal_int,
+                .literal_float,
+                .literal_str,
+                => self.nodeTokenSlice(node),
                 .add, .sub, .mul, .pow, .div => blk: {
                     const data = self.nodeData(node);
                     break :blk .{
@@ -197,9 +220,18 @@ pub fn full(self: *const Ast, node: Node.Index) Node.Full {
                         .args = args,
                     };
                 },
+                .builtin_call => blk: {
+                    const data = self.nodeData(node);
+                    const args = self.extraSlice(data.rhs);
+
+                    break :blk .{
+                        .identifier = self.tokenSlice(data.lhs),
+                        .args = args,
+                    };
+                },
                 .block => blk: {
                     const data = self.nodeData(node);
-                    const nodes = self.extraSlice(data.rhs);
+                    const nodes = self.extraSlice(data.lhs);
                     break :blk .{ .nodes = nodes };
                 },
             };

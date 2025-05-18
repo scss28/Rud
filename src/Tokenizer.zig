@@ -56,8 +56,6 @@ pub fn next(self: *Tokenizer) Token {
             number: switch (self.src[self.index]) {
                 '0'...'9' => {
                     self.index += 1;
-
-                    defer self.index += 1;
                     continue :number self.src[self.index];
                 },
                 '.' => if (!dot_parsed) {
@@ -66,7 +64,6 @@ pub fn next(self: *Tokenizer) Token {
                             dot_parsed = true;
                             self.index += 2;
 
-                            defer self.index += 1;
                             continue :number self.src[self.index];
                         },
                         else => {},
@@ -76,6 +73,21 @@ pub fn next(self: *Tokenizer) Token {
             }
 
             break :tag if (dot_parsed) .literal_float else .literal_int;
+        },
+        '"' => {
+            while (true) switch (blk: {
+                defer self.index += 1;
+                break :blk self.src[self.index];
+            }) {
+                '\\' => {
+                    if (self.src[self.index] == '"') self.index += 1;
+                },
+                '"' => break,
+                0 => break :tag .eof,
+                else => {},
+            };
+
+            break :tag .literal_str;
         },
         '+' => .plus,
         '-' => .minus,
