@@ -1,4 +1,6 @@
 const std = @import("std");
+const fmt = std.fmt;
+const time = std.time;
 const io = std.io;
 const fs = std.fs;
 const math = std.math;
@@ -80,8 +82,15 @@ pub fn main() !void {
                 return;
             };
 
+            const pre_comptime: time.Instant = try .now();
             var ir = try build(gpa, path);
             defer ir.deinit(gpa);
+
+            const ns = (try time.Instant.now()).since(pre_comptime);
+            try io.getStdOut().writer().print(
+                "\x1b[2mCompilation finished in {d:.3} s\x1b[m\n",
+                .{@as(f64, @floatFromInt(ns)) / time.ns_per_s},
+            );
 
             var vm: Vm = try .init(gpa, &ir, .{});
             defer vm.deinit();
@@ -120,7 +129,7 @@ fn build(gpa: mem.Allocator, path: []const u8) !Ir {
     if (ast.errors.len > 0) {
         for (ast.errors) |err| {
             const span = ast.tokenSpan(err.token);
-            try writeError(out, err.message, span, src);
+            try writeError(out, err.message, span, path, src);
         }
 
         process.exit(1);
@@ -138,7 +147,7 @@ fn build(gpa: mem.Allocator, path: []const u8) !Ir {
         for (errors) |err| {
             const span = ast.nodeSpan(err.node);
             const message = ir.string(err.message);
-            try writeError(out, message, span, src);
+            try writeError(out, message, span, path, src);
         }
 
         process.exit(1);
@@ -155,8 +164,20 @@ fn build(gpa: mem.Allocator, path: []const u8) !Ir {
     return ir;
 }
 
-fn writeError(writer: anytype, message: []const u8, span: Span, src: [:0]const u8) !void {
+fn writeError(
+    writer: anytype,
+    message: []const u8,
+    span: Span,
+    path: []const u8,
+    src: [:0]const u8,
+) !void {
     const loc = span.loc(src);
+
+    try writer.print("\x1b[1;91merror\x1b[m \x1b[1m{s}:{d}:{d}\x1b[m:\n", .{
+        path,
+        loc.line,
+        loc.char,
+    });
 
     var line_start = span.start;
     while (line_start > 0) switch (src[line_start - 1]) {
@@ -170,9 +191,30 @@ fn writeError(writer: anytype, message: []const u8, span: Span, src: [:0]const u
         else => line_end += 1,
     };
 
-    try writer.print("{s}\n", .{src[line_start..line_end]});
+    const offset = fmt.count("{d}", .{loc.line});
+    if (line_start != 0) {
+        var previous_line_start = line_start - 1;
+        while (line_start > 0) switch (src[previous_line_start - 1]) {
+            '\n' => break,
+            else => previous_line_start -= 1,
+        };
+
+        for (0..offset) |_| try writer.writeByte(' ');
+
+        try writer.print("\x1b[2m |\x1b[m {s}\n", .{
+            src[previous_line_start .. line_start - 1],
+        });
+    }
+
+    try writer.print("\x1b[2m{d} |\x1b[m {s}\n", .{
+        loc.line,
+        src[line_start..line_end],
+    });
+
+    for (0..offset + 3) |_| try writer.writeByte(' ');
     for (line_start..span.start) |_| try writer.writeByte(' ');
 
+    try writer.writeAll("\x1b[33;1m");
     for (span.start..span.end) |_| try writer.writeByte('^');
-    try writer.print(" error: {s} ({d}:{d})\n", .{ message, loc.line, loc.char });
+    try writer.print(" \x1b[0;1m{s}\x1b[m\n\n", .{message});
 }

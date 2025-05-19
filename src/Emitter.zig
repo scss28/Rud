@@ -11,10 +11,6 @@ const Instr = Ir.Instr;
 
 const Emitter = @This();
 
-const call_identifier_to_instr_tag: std.StaticStringMap(Instr.Tag) = .initComptime(.{
-    .{ "max", .max },
-});
-
 gpa: mem.Allocator,
 
 index: Ast.Node.Index,
@@ -60,14 +56,10 @@ pub fn emit(gpa: mem.Allocator, ast: *const Ast) mem.Allocator.Error!Ir {
             error.Emit => continue,
         };
 
-        if (ty != .nil) {
-            const err = e.throw(node, "expected {s} got {s}", .{
-                @tagName(Type.nil),
-                @tagName(ty),
-            });
-
-            if (err == error.OutOfMemory) return error.OutOfMemory;
-        }
+        e.assertType(node, .nil, ty) catch |err| switch (err) {
+            error.OutOfMemory => |oom| return oom,
+            error.Emit => continue,
+        };
     }
 
     const errors_index: u32 = @intFromEnum(Ir.ExtraIndex.errors);
@@ -98,7 +90,7 @@ pub fn emit(gpa: mem.Allocator, ast: *const Ast) mem.Allocator.Error!Ir {
     };
 }
 
-const Type = union(enum) {
+const Type = enum {
     nil,
     int,
     float,
@@ -147,20 +139,13 @@ fn inspectNode(
             const index: u32 = @intCast(self.string_bytes.items.len);
             var i: usize = 1;
             while (i < slice.len - 1) : (i += 1) {
-                var byte = slice[i];
-                if (byte == '\\') {
-                    defer i += 1;
-                    byte = switch (slice[i + 1]) {
-                        'n' => '\n',
-                        't' => '\t',
-                        'r' => '\r',
-                        else => return self.throw(
-                            node,
-                            "invalid escape character '{c}'",
-                            .{slice[i + 1]},
-                        ),
-                    };
-                }
+                const byte = switch (slice[i]) {
+                    '\\' => blk: {
+                        defer i += 1;
+                        break :blk try self.escapeCharacter(node, slice[i + 1]);
+                    },
+                    else => |b| b,
+                };
 
                 self.string_bytes.appendAssumeCapacity(byte);
             }
@@ -170,7 +155,6 @@ fn inspectNode(
                 .tag = .pushs,
                 .data = index,
             });
-
             return .str;
         },
         inline .add, .sub, .mul, .pow, .div => |binop, tag| {
@@ -204,7 +188,7 @@ fn inspectNode(
             } else {
                 return self.throw(
                     node,
-                    "unable to perform {s} on {s} and {s}",
+                    "unable to {s} {s} and {s}",
                     .{
                         @tagName(tag),
                         @tagName(lhs),
@@ -226,11 +210,110 @@ fn inspectNode(
             return .nil;
         },
         .builtin_call => |bcall| {
-            const tag = meta.stringToEnum(enum { print }, bcall.identifier) orelse {
+            const tag = meta.stringToEnum(enum {
+                print,
+                int,
+                float,
+            }, bcall.identifier) orelse {
                 return self.throw(node, "not a builtin", .{});
             };
             switch (tag) {
                 .print => {
+                    if (bcall.args.len < 1) return self.throw(
+                        node,
+                        "expected at least 1 argument",
+                        .{},
+                    );
+
+                    if (self.ast.nodeTag(bcall.args[0]) != .literal_str) {
+                        return self.throw(
+                            bcall.args[0],
+                            "first argument must be a str literal",
+                            .{},
+                        );
+                    }
+
+                    const slice = self.ast.nodeTokenSlice(bcall.args[0]);
+
+                    try self.string_bytes.ensureUnusedCapacity(self.gpa, slice.len - 1);
+                    var scratch: std.ArrayListUnmanaged(u8) = try .initCapacity(
+                        self.gpa,
+                        slice.len - 1,
+                    );
+                    defer scratch.deinit(self.gpa);
+
+                    var i: usize = 1;
+                    var arg_i: usize = 1;
+                    while (i < slice.len - 1) : (i += 1) {
+                        const byte = switch (slice[i]) {
+                            '\\' => blk: {
+                                defer i += 1;
+                                break :blk try self.escapeCharacter(
+                                    bcall.args[0],
+                                    slice[i + 1],
+                                );
+                            },
+                            '{' => blk: {
+                                i += 1;
+                                if (slice[i + 1] == '{') break :blk '{';
+
+                                const index: u32 = @intCast(self.string_bytes.items.len);
+
+                                try scratch.append(self.gpa, 0);
+                                try self.string_bytes.appendSlice(self.gpa, scratch.items);
+
+                                scratch.clearRetainingCapacity();
+
+                                try self.appendInstr(.{ .tag = .pushs, .data = index });
+                                try self.appendInstr(.tagOnly(.prints));
+
+                                while (i < slice.len and slice[i] != '}') i += 1;
+                                if (slice[i] != '}') return self.throw(
+                                    bcall.args[0],
+                                    "missing closing '}}' for format string",
+                                    .{},
+                                );
+
+                                if (arg_i == bcall.args.len) return self.throw(
+                                    node,
+                                    "missing argument for format string",
+                                    .{},
+                                );
+
+                                const ty_arg = try self.inspectNode(bcall.args[arg_i]);
+                                arg_i += 1;
+
+                                try self.appendInstr(.tagOnly(switch (ty_arg) {
+                                    .str => .prints,
+                                    .int => .printi,
+                                    .float => .printf,
+                                    .nil => .printn,
+                                }));
+
+                                continue;
+                            },
+                            else => |b| b,
+                        };
+
+                        try scratch.append(self.gpa, byte);
+                    }
+
+                    if (scratch.items.len > 0) {
+                        const index: u32 = @intCast(self.string_bytes.items.len);
+
+                        try scratch.append(self.gpa, 0);
+                        try self.string_bytes.appendSlice(self.gpa, scratch.items);
+
+                        try self.appendInstr(.{
+                            .tag = .pushs,
+                            .data = index,
+                        });
+                        try self.appendInstr(.tagOnly(.prints));
+                    }
+
+                    return .nil;
+                },
+                .int => {
                     if (bcall.args.len != 1) return self.throw(
                         node,
                         "expected 1 argument",
@@ -238,14 +321,23 @@ fn inspectNode(
                     );
 
                     const ty = try self.inspectNode(bcall.args[0]);
-                    if (ty != .str) return self.throw(
-                        bcall.args[0],
-                        "expected {s} argument got {s}",
-                        .{ @tagName(Type.str), @tagName(ty) },
+                    try self.assertType(bcall.args[0], .float, ty);
+
+                    try self.appendInstr(.tagOnly(.fti));
+                    return .int;
+                },
+                .float => {
+                    if (bcall.args.len != 1) return self.throw(
+                        node,
+                        "expected 1 argument",
+                        .{},
                     );
 
-                    try self.appendInstr(.tagOnly(.prints));
-                    return .nil;
+                    const ty = try self.inspectNode(bcall.args[0]);
+                    try self.assertType(bcall.args[0], .int, ty);
+
+                    try self.appendInstr(.tagOnly(.itf));
+                    return .float;
                 },
             }
         },
@@ -257,27 +349,34 @@ fn inspectNode(
     }
 }
 
-fn inspectCallArgs(
+fn assertType(
     self: *Emitter,
-    call: Ast.Node.Full.Call,
-    types: []const Type,
+    node: Ast.Node.Index,
+    expected: Type,
+    actual: Type,
 ) (mem.Allocator.Error || error{Emit})!void {
-    if (call.args.len != types.len) {
-        return self.throw(call.callee, "expected {d} arguments got {d}", .{
-            types.len,
-            call.args.len,
-        });
-    }
+    if (expected != actual) return self.throw(node, "expected {s} got {s}", .{
+        @tagName(expected),
+        @tagName(actual),
+    });
+}
 
-    for (call.args, types) |arg, ty| {
-        const arg_ty = try self.inspectNode(arg);
-        if (arg_ty != ty) {
-            return self.throw(arg, "expected argument type {s} got {s}", .{
-                @tagName(ty),
-                @tagName(arg_ty),
-            });
-        }
-    }
+fn escapeCharacter(
+    self: *Emitter,
+    node: Ast.Node.Index,
+    char: u8,
+) (mem.Allocator.Error || error{Emit})!u8 {
+    return switch (char) {
+        'n' => '\n',
+        't' => '\t',
+        'r' => '\r',
+        '"' => '"',
+        else => return self.throw(
+            node,
+            "invalid escape character '{c}'",
+            .{char},
+        ),
+    };
 }
 
 fn appendInstr(self: *Emitter, instr: Instr) mem.Allocator.Error!void {

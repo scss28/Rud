@@ -104,9 +104,13 @@ pub const Instr = struct {
         powf,
         divf,
 
+        fti,
+        itf,
+
         prints,
         printi,
         printf,
+        printn,
 
         jmp,
     };

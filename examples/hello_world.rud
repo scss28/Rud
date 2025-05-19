@@ -1,0 +1,3 @@
+a := "Hello"
+b := "world"
+@print("{}, {}!\n", a, b)

@@ -4,6 +4,8 @@ const io = std.io;
 const meta = std.meta;
 const math = std.math;
 
+const assert = std.debug.assert;
+
 const Ir = @import("Ir.zig");
 const Vm = @This();
 
@@ -19,14 +21,22 @@ const Stack = struct {
     ptr: usize,
     buf: []usize,
 
-    fn push(self: *Stack, value: usize) void {
-        self.buf[self.ptr] = value;
+    fn push(self: *Stack, value: anytype) void {
+        const T = @TypeOf(value);
+
+        assert(@sizeOf(T) <= @sizeOf(usize));
+        const UInt = meta.Int(.unsigned, @bitSizeOf(T));
+
+        self.buf[self.ptr] = @as(UInt, @bitCast(value));
         self.ptr += 1;
     }
 
-    fn pop(self: *Stack) usize {
+    fn pop(self: *Stack, T: type) T {
+        assert(@sizeOf(T) <= @sizeOf(usize));
+        const UInt = meta.Int(.unsigned, @bitSizeOf(T));
+
         self.ptr -= 1;
-        return self.buf[self.ptr];
+        return @bitCast(@as(UInt, @truncate(self.buf[self.ptr])));
     }
 };
 
@@ -58,14 +68,12 @@ pub fn next(self: *Vm) bool {
     if (self.index >= self.ir.instrs.len) return false;
     switch (self.ir.instrTag(self.index)) {
         .pushi => {
-            const UInt = meta.Int(.unsigned, @bitSizeOf(Ir.consts.Int));
             const int = self.ir.instrDataExtra(Ir.consts.Int, self.index);
-            self.stack.push(@as(UInt, @bitCast(int)));
+            self.stack.push(int);
         },
         .pushf => {
-            const UInt = meta.Int(.unsigned, @bitSizeOf(Ir.consts.Float));
             const float = self.ir.instrDataExtra(Ir.consts.Float, self.index);
-            self.stack.push(@as(UInt, @bitCast(float)));
+            self.stack.push(float);
         },
         .pushs => {
             const index = self.ir.instrData(self.index);
@@ -77,7 +85,7 @@ pub fn next(self: *Vm) bool {
         },
         .store => {
             const i = self.ir.instrData(self.index);
-            const value = self.stack.pop();
+            const value = self.stack.pop(usize);
             self.vars[i] = value;
         },
         inline .addi,
@@ -97,10 +105,8 @@ pub fn next(self: *Vm) bool {
                 else => unreachable,
             };
 
-            const UInt = meta.Int(.unsigned, @bitSizeOf(Operand));
-
-            const rhs: Operand = @bitCast(@as(UInt, @truncate(self.stack.pop())));
-            const lhs: Operand = @bitCast(@as(UInt, @truncate(self.stack.pop())));
+            const rhs: Operand = self.stack.pop(Operand);
+            const lhs: Operand = self.stack.pop(Operand);
 
             const value = switch (tag) {
                 .addi, .addf => lhs + rhs,
@@ -111,15 +117,32 @@ pub fn next(self: *Vm) bool {
                 else => unreachable,
             };
 
-            self.stack.push(@as(UInt, @bitCast(value)));
+            self.stack.push(value);
+        },
+        .itf => {
+            const float: Ir.consts.Float = @floatFromInt(self.stack.pop(Ir.consts.Int));
+            self.stack.push(float);
+        },
+        .fti => {
+            const int: Ir.consts.Int = @intFromFloat(self.stack.pop(Ir.consts.Float));
+            self.stack.push(int);
         },
         .prints => {
-            const index: u32 = @truncate(self.stack.pop());
+            const index = self.stack.pop(u32);
             const str = self.ir.string(@enumFromInt(index));
             io.getStdOut().writeAll(str) catch {};
         },
-        .printi => {},
-        .printf => {},
+        .printi => {
+            const int = self.stack.pop(Ir.consts.Int);
+            io.getStdOut().writer().print("{d}", .{int}) catch {};
+        },
+        .printf => {
+            const float = self.stack.pop(Ir.consts.Float);
+            io.getStdOut().writer().print("{d}", .{float}) catch {};
+        },
+        .printn => {
+            io.getStdOut().writer().print("nil", .{}) catch {};
+        },
         .jmp => {
             self.index = self.ir.instrData(self.index);
             return true;
