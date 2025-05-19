@@ -19,10 +19,12 @@ zig build --help
 
 ## Language Reference
 ### Types
-| Name  | Description                                                              |
-|-------|--------------------------------------------------------------------------|
-| `num` | Represents a number                                                      |
-| `nil` | Represents no value, returned by expressions such as variable assignment |
+| Name    | Description                                                   |
+|---------|---------------------------------------------------------------|
+| `int`   | A 32-bit integer                                              |
+| `float` | A 32-bit floating point number                                |
+| `cstr`  | A constant string                                             |
+| `nil`   | No value, returned by expressions such as variable assignment |
 
 ### Operators
 | Name           | Syntax   | Description                    |
@@ -34,15 +36,11 @@ zig build --help
 | Power          | `a ** b` | Raise one number to some power |
 
 ### Builtin Functions
-| Name            | Description                               |
-|-----------------|-------------------------------------------|
-| `lerp(a, b, t)` | Linear interpolation between a and b by t |
-
-### Variables
-```
-a := 2  # a is now 2
-a       # = 2
-```
+| Name                  | Description                                   |
+|-----------------------|-----------------------------------------------|
+| `@print(fmt, args..)` | Print a string with optional format arguments |
+| `@int(x)`             | Convert a `float` to an `int`                 |
+| `@float(x)`           | Convert an `int` to a `float`                 |
 
 ## Examples
 ### Repl

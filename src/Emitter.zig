@@ -94,7 +94,7 @@ const Type = enum {
     nil,
     int,
     float,
-    str,
+    cstr,
 };
 
 fn inspectNode(
@@ -155,7 +155,7 @@ fn inspectNode(
                 .tag = .pushs,
                 .data = index,
             });
-            return .str;
+            return .cstr;
         },
         inline .add, .sub, .mul, .pow, .div => |binop, tag| {
             const lhs = try self.inspectNode(binop.lhs);
@@ -284,9 +284,9 @@ fn inspectNode(
                                 arg_i += 1;
 
                                 try self.appendInstr(.tagOnly(switch (ty_arg) {
-                                    .str => .prints,
                                     .int => .printi,
                                     .float => .printf,
+                                    .cstr => .prints,
                                     .nil => .printn,
                                 }));
 
