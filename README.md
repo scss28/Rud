@@ -45,19 +45,10 @@ a       # = 2
 ```
 
 ## Examples
-### Repl
+### Hello, world!
 ```
-$ rud
-> 2 + 2
-= 4
-
-> a := 2
-> a ** 3
-= 8
-
-> a * (3 - 1) / 12
-= 0.3333333333333333
-
-> lerp(1, 3, 0.5)
-= 2
+a := "Hello"
+b := "world"
+@print("{}, {}!\n", a, b)
 ```
+run: `zig build run -- run examples/hello_world.rud`
