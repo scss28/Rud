@@ -244,6 +244,46 @@ fn nextSingleLeaf(self: *Parser) (mem.Allocator.Error || error{Syntax})!Node.Ind
                 },
             });
         },
+        .keyword_fn => {
+            const token = self.eatTokenAny();
+            _ = try self.assertToken(.lparen);
+
+            const start = try self.appendScratch(undefined);
+            while (true) {
+                while (self.eatToken(.newline) != null) {}
+                if (self.currentTokenTag() == .rparen) break;
+
+                const tok = try self.assertToken(.identifier);
+                _ = try self.appendScratch(tok);
+
+                if (self.eatToken(.comma) == null) break;
+            }
+            _ = try self.assertToken(.rparen);
+
+            const args = try self.popScratch(start);
+            const body = try self.nextNode();
+
+            return self.addNode(.{
+                .tag = .fn_decl,
+                .token = token,
+                .data = .{
+                    .lhs = args,
+                    .rhs = body,
+                },
+            });
+        },
+        .keyword_ret => {
+            const token = self.eatTokenAny();
+            const expr = try self.nextNode();
+            return self.addNode(.{
+                .tag = .ret_expr,
+                .token = token,
+                .data = .{
+                    .lhs = expr,
+                    .rhs = undefined,
+                },
+            });
+        },
         .lparen => {
             _ = self.eatTokenAny();
 

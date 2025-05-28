@@ -1,3 +1,4 @@
+const std = @import("std");
 const Span = @import("Span.zig");
 const Tokenizer = @This();
 
@@ -30,9 +31,17 @@ pub const Token = struct {
         lbrace,
         rbrace,
 
+        keyword_fn,
+        keyword_ret,
+
         newline,
         invalid,
         eof,
+
+        const keyword_map: std.StaticStringMap(Tag) = .initComptime(.{
+            .{ "fn", .keyword_fn },
+            .{ "ret", .keyword_ret },
+        });
     };
 };
 
@@ -48,7 +57,13 @@ pub fn next(self: *Tokenizer) Token {
                     self.index += 1;
                     continue :identifier self.src[self.index];
                 },
-                else => break :tag .identifier,
+                else => {
+                    if (Token.Tag.keyword_map.get(self.src[start..self.index])) |tag| {
+                        break :tag tag;
+                    }
+
+                    break :tag .identifier;
+                },
             }
         },
         '0'...'9' => {

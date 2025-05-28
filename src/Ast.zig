@@ -45,6 +45,8 @@ pub const Node = struct {
         call,
         builtin_call,
         block,
+        fn_decl,
+        ret_expr,
     };
 
     pub const Data = struct {
@@ -75,6 +77,11 @@ pub const Node = struct {
         pub const Block = struct {
             nodes: []const Node.Index,
         };
+        pub const FnDecl = struct {
+            args: []const TokenIndex,
+            body: Node.Index,
+        };
+        pub const RetExpr = Node.Index;
 
         identifier: Slice,
         literal_int: Slice,
@@ -89,6 +96,8 @@ pub const Node = struct {
         call: Call,
         builtin_call: BuiltinCall,
         block: Block,
+        fn_decl: FnDecl,
+        ret_expr: RetExpr,
     };
 };
 
@@ -167,12 +176,19 @@ pub fn nodeSpan(self: *const Ast, node: Node.Index) Span {
                 .end = self.nodeTokenSpan(node).end,
             };
         },
-        .block => {
+        .block, .fn_decl => {
             const start = self.nodeTokenSpan(node).start;
 
             const data = self.nodeData(node);
             const end = self.tokenSpan(data.rhs).end;
             return .{ .start = start, .end = end };
+        },
+        .ret_expr => {
+            const data = self.nodeData(node);
+            return .{
+                .start = self.nodeTokenSpan(node).start,
+                .end = self.nodeSpan(data.lhs).end,
+            };
         },
     }
 }
@@ -190,50 +206,58 @@ pub inline fn rootNodes(self: *const Ast) []const Node.Index {
 pub fn full(self: *const Ast, node: Node.Index) Node.Full {
     switch (self.nodeTag(node)) {
         inline else => |tag| {
-            const value: meta.TagPayload(Node.Full, tag) = switch (tag) {
+            const value: meta.TagPayload(Node.Full, tag) = payload: switch (tag) {
                 .identifier,
                 .literal_int,
                 .literal_float,
                 .literal_str,
                 => self.nodeTokenSlice(node),
-                .add, .sub, .mul, .pow, .div => blk: {
+                .add, .sub, .mul, .pow, .div => {
                     const data = self.nodeData(node);
-                    break :blk .{
+                    break :payload .{
                         .lhs = data.lhs,
                         .rhs = data.rhs,
                     };
                 },
-                .assign => blk: {
+                .assign => {
                     const data = self.nodeData(node);
                     const identifier = self.tokenSlice(data.lhs);
-                    break :blk .{
+                    break :payload .{
                         .identifier = identifier,
                         .rhs = data.rhs,
                     };
                 },
-                .call => blk: {
+                .call => {
                     const data = self.nodeData(node);
                     const args = self.extraSlice(data.rhs);
-
-                    break :blk .{
+                    break :payload .{
                         .callee = data.lhs,
                         .args = args,
                     };
                 },
-                .builtin_call => blk: {
+                .builtin_call => {
                     const data = self.nodeData(node);
                     const args = self.extraSlice(data.rhs);
 
-                    break :blk .{
+                    break :payload .{
                         .identifier = self.tokenSlice(data.lhs),
                         .args = args,
                     };
                 },
-                .block => blk: {
+                .block => {
                     const data = self.nodeData(node);
                     const nodes = self.extraSlice(data.lhs);
-                    break :blk .{ .nodes = nodes };
+                    break :payload .{ .nodes = nodes };
                 },
+                .fn_decl => {
+                    const data = self.nodeData(node);
+                    const args = self.extraSlice(data.lhs);
+                    break :payload .{
+                        .args = args,
+                        .body = data.rhs,
+                    };
+                },
+                .ret_expr => self.nodeData(node).lhs,
             };
 
             return @unionInit(Node.Full, @tagName(tag), value);

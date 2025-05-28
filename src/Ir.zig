@@ -84,7 +84,7 @@ pub const Instr = struct {
     tag: Tag,
     data: Data,
 
-    const Tag = enum {
+    pub const Tag = enum {
         pushi,
         pushf,
         pushs,
@@ -113,8 +113,12 @@ pub const Instr = struct {
         printn,
 
         jmp,
+        call,
+        ret,
+
+        exit,
     };
-    const Data = u32;
+    pub const Data = u32;
 
     pub inline fn tagOnly(tag: Tag) Instr {
         return .{
