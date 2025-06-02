@@ -176,12 +176,20 @@ pub fn nodeSpan(self: *const Ast, node: Node.Index) Span {
                 .end = self.nodeTokenSpan(node).end,
             };
         },
-        .block, .fn_decl => {
+        .block => {
             const start = self.nodeTokenSpan(node).start;
 
             const data = self.nodeData(node);
-            const end = self.tokenSpan(data.rhs).end;
+            const end = self.nodeTokenSpan(data.rhs).end;
             return .{ .start = start, .end = end };
+        },
+        .fn_decl => {
+            const start = self.nodeTokenSpan(node).start;
+            const data = self.nodeData(node);
+            return .{
+                .start = start,
+                .end = self.nodeSpan(data.rhs).end,
+            };
         },
         .ret_expr => {
             const data = self.nodeData(node);

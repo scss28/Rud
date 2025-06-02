@@ -13,6 +13,7 @@ pub fn build(b: *std.Build) void {
     const exe = b.addExecutable(.{
         .name = "rud",
         .root_module = exe_mod,
+        .use_llvm = optimize != .Debug,
     });
 
     b.installArtifact(exe);

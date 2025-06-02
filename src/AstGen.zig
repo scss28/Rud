@@ -22,7 +22,6 @@ scratch: std.ArrayListUnmanaged(u32),
 
 scope: *Scope,
 var_stack_ptr: VarStackIndex,
-pool: Pool,
 
 errors: std.ArrayListUnmanaged(Mir.Error),
 args: std.ArrayListUnmanaged(Mir.Type),
@@ -34,7 +33,7 @@ const Scope = struct {
     vars: std.StringHashMapUnmanaged(Var),
 
     const Var = struct {
-        pooled: Pool.Index,
+        value: Value.Index,
         index: VarStackIndex,
     };
 
@@ -44,21 +43,30 @@ const Scope = struct {
     };
 };
 
-const Pool = struct {
-    data: std.ArrayListUnmanaged(usize),
+fn instrRef(
+    self: *AstGen,
+    instr: Mir.Instr,
+) mem.Allocator.Error!Ref {
+    const index = try self.addInstr(instr);
+    return @enumFromInt(@intFromEnum(index) | 1 << 31);
+}
 
-    fn get(self: Pool, gpa: mem.Allocator, key: Key) Index {
-        _ = self;
-    }
-
-    const Key = union(enum) {
-        int: struct {
-            literal: []const u8,
-        },
-    };
+const Value = union(enum) {
+    type_int,
+    type_float,
+    type_str,
+    int: struct {
+        literal: []const u8,
+    },
+    float: struct {
+        literal: []const u8,
+    },
 
     const Index = enum(u32) {
         none = math.maxInt(u32),
+        type_int,
+        type_float,
+        type_str,
         _,
     };
 };
@@ -66,15 +74,11 @@ const Pool = struct {
 const Ref = enum(u32) {
     none = math.maxInt(u32),
 
-    fn initPooled(index: Pool.Index) Ref {
-        return @enumFromInt(@intFromEnum(index));
+    fn initValue(value: Value.Index) Ref {
+        return @enumFromInt(@intFromEnum(value));
     }
 
-    fn initInstr(instr: Mir.Instr.Index) Ref {
-        return @enumFromInt(@intFromEnum(instr) | 1 << 31);
-    }
-
-    fn toType(self: Ref) ?Pool.Index {
+    fn toPooled(self: Ref) ?Pool.Index {
         if (@intFromEnum(self) >> 31 == 0) {
             return @enumFromInt(@as(u31, @truncate(@intFromEnum(self))));
         }
@@ -136,14 +140,14 @@ pub fn gen(gpa: mem.Allocator, ast: *const Ast) mem.Allocator.Error!Mir {
     for (ast.rootNodes()) |node| {
         var instr, const value, const flow =
             g.genNode(node) catch |err| switch (err) {
-                error.Gen => continue,
+                error.Fail => continue,
                 error.OutOfMemory => |oom| return oom,
             };
 
         if (flow == .ret) {
             if (!value.runtime()) {
                 instr = g.valueToInstr(node, value) catch |err| switch (err) {
-                    error.Gen => break,
+                    error.Fail => break,
                     error.OutOfMemory => |oom| return oom,
                 };
             }
@@ -218,40 +222,10 @@ pub fn gen(gpa: mem.Allocator, ast: *const Ast) mem.Allocator.Error!Mir {
     };
 }
 
-fn valueToInstr(
-    self: *AstGen,
-    src_node: Ast.Node.Index,
-    value: Value,
-) Error!Mir.Instr.Index {
-    return switch (value) {
-        .comp_int => |int| self.addInstr(.{
-            .tag = .int,
-            .data = .{
-                .lhs = @bitCast(int),
-                .rhs = undefined,
-            },
-        }),
-        .comp_float => |float| self.addInstr(.{
-            .tag = .float,
-            .data = .{
-                .lhs = @bitCast(float),
-                .rhs = undefined,
-            },
-        }),
-        else => self.throw(src_node, "unable to convert {s} to a runtime value", .{
-            @tagName(value),
-        }),
-    };
-}
+const Error = error{Fail} || mem.Allocator.Error;
+const GenError = error{ Fail, Break, Return };
 
-const Error = error{Gen} || mem.Allocator.Error;
-const ControllFlow = enum { ret, pass };
-
-fn genNode(self: *AstGen, node: Ast.Node.Index) Error!struct {
-    Mir.Instr.Index,
-    Value,
-    ControllFlow,
-} {
+fn genNode(self: *AstGen, node: Ast.Node.Index) GenError!Ref {
     switch (self.ast.full(node)) {
         .identifier => |slice| {
             const v = self.getVar(slice) orelse return self.throw(
@@ -260,7 +234,15 @@ fn genNode(self: *AstGen, node: Ast.Node.Index) Error!struct {
                 .{slice},
             );
 
-            if (v.value.runtime()) return .{
+            if (v.value.runtime()) return self.instrRef(.{
+                .tag = .load,
+                .data = .{
+                    .lhs = v.index,
+                    .rhs = undefined,
+                },
+            });
+
+            .{
                 try self.addInstr(.{
                     .tag = .load,
                     .data = .{
@@ -272,11 +254,7 @@ fn genNode(self: *AstGen, node: Ast.Node.Index) Error!struct {
                 .pass,
             };
 
-            return .{
-                Mir.Instr.none,
-                v.value,
-                .pass,
-            };
+            return .initValue(.none);
         },
         .assign => |assign| {
             const instr, const value = try self.genNodeAssertPass(assign.rhs);
@@ -603,7 +581,7 @@ fn setVar(
     @"var".value_ptr.value = value;
 }
 
-fn getVar(self: *AstGen, identifier: []const u8) ?Scope.Var {
+fn getVar(self: *AstGen, identifier: []const u8) ?Pool.Index {
     var outside_fn = false;
     var scope: ?*Scope = self.scope;
     while (scope) |s| : (scope = s.parent) {
@@ -652,7 +630,7 @@ fn throw(
         .node = node,
     });
 
-    return error.Gen;
+    return error.Fail;
 }
 
 fn addExtra(self: AstGen, extra: anytype) mem.Allocator.Error!u32 {

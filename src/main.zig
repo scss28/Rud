@@ -13,29 +13,9 @@ const log = std.log;
 const builtin = @import("builtin");
 
 const Parser = @import("Parser.zig");
-const AstGen = @import("AstGen.zig");
-const Emitter = @import("Emitter.zig");
-const Ir = @import("Ir.zig");
-const Vm = @import("Vm.zig");
+const InternPool = @import("InternPool.zig");
+const Resolver = @import("Resolver.zig");
 const Span = @import("Span.zig");
-
-const help =
-    \\Usage: {s} [command]
-    \\
-    \\Commands:
-    \\
-    \\  repl (default)  Enter a repl
-    \\  run [path]      Run code from a file
-    \\  build [path]    Run code from a file
-    \\  help            Print this help and exit
-    \\
-;
-
-const Command = enum {
-    run,
-    build,
-    help,
-};
 
 pub fn main() !void {
     var gpa_state = if (debug.runtime_safety) heap.DebugAllocator(.{}).init else {};
@@ -48,186 +28,87 @@ pub fn main() !void {
     var args = try process.argsWithAllocator(gpa);
     defer args.deinit();
 
-    const program = args.next() orelse "miti";
-    const first_arg = args.next() orelse {
-        log.info(help, .{program});
+    _ = args.skip();
+    const path = args.next() orelse {
+        log.err("expected a path argument", .{});
         return;
     };
 
-    const command = meta.stringToEnum(Command, first_arg) orelse {
-        log.info(help, .{program});
-        log.err("unknown command: {s}", .{first_arg});
-        return;
-    };
+    const src = try fs.cwd().readFileAllocOptions(
+        gpa,
+        path,
+        math.maxInt(u32),
+        null,
+        1,
+        0,
+    );
+    defer gpa.free(src);
 
-    switch (command) {
-        .build => {},
-        .run => {
-            const path = args.next() orelse {
-                log.err("expected a path argument", .{});
-                return;
-            };
+    var ast = try Parser.parse(gpa, src);
+    defer ast.deinit(gpa);
 
-            const src = try fs.cwd().readFileAllocOptions(
-                gpa,
-                path,
-                math.maxInt(u32),
-                null,
-                1,
-                0,
+    const out = io.getStdOut().writer();
+    if (builtin.mode == .Debug) {
+        try out.writeAll("\nTokens:\n");
+        for (ast.tokens.items(.tag), 0..) |token_tag, i| {
+            try out.print("{d}.\t{s}\n", .{ i, @tagName(token_tag) });
+        }
+    }
+
+    if (ast.errors.len > 0) {
+        for (ast.errors) |err| {
+            const span = ast.tokenSpan(err.token);
+            try writeError(out, err.message, span, path, src);
+        }
+
+        process.exit(1);
+    }
+
+    if (builtin.mode == .Debug) {
+        try out.writeAll("\nAst:\n");
+        for (ast.rootNodes(), 0..) |node, i| {
+            try out.print("{d}.\t{s}\n", .{ i, @tagName(ast.nodeTag(node)) });
+        }
+    }
+
+    var ip: InternPool = try .init(gpa);
+    defer ip.deinit();
+
+    var rast = try Resolver.resolve(gpa, &ast, &ip, &.{ .i32, .i32 });
+    defer rast.deinit(gpa);
+
+    if (rast.errors().len > 0) {
+        for (rast.errors()) |err| {
+            const span = ast.nodeSpan(err.node);
+            const message = rast.string(err.message);
+            try writeError(out, message, span, path, src);
+        }
+
+        process.exit(1);
+    }
+
+    if (builtin.mode == .Debug) {
+        try out.writeAll("\nRAst:\n");
+        for (rast.rootNodes()) |node| {
+            try out.print("{d}.\t{s}\n", .{
+                @intFromEnum(node),
+                @tagName(rast.nodeTag(node)),
+            });
+        }
+
+        try out.writeAll("\n0.\troot\n");
+        for (1..rast.nodes.len) |node| {
+            const tag = rast.nodeTag(@enumFromInt(node));
+            try out.print(
+                "{d}.\t{s}\n",
+                .{
+                    node,
+                    @tagName(tag),
+                },
             );
-            defer gpa.free(src);
-
-            var ast = try Parser.parse(gpa, src);
-            defer ast.deinit(gpa);
-
-            const out = io.getStdOut().writer();
-
-            if (builtin.mode == .Debug) {
-                try out.writeAll("----- TOKENS ------\n");
-                for (ast.tokens.items(.tag), 0..) |token_tag, i| {
-                    try out.print("{d}. {s}\n", .{ i, @tagName(token_tag) });
-                }
-            }
-
-            if (ast.errors.len > 0) {
-                for (ast.errors) |err| {
-                    const span = ast.tokenSpan(err.token);
-                    try writeError(out, err.message, span, path, src);
-                }
-
-                process.exit(1);
-            }
-
-            if (builtin.mode == .Debug) {
-                try out.writeAll("------ AST -------\n");
-                for (ast.rootNodes(), 0..) |node, i| {
-                    try out.print("{d}. {s}\n", .{ i, @tagName(ast.nodeTag(node)) });
-                }
-            }
-
-            var mir = try AstGen.gen(gpa, &ast);
-            defer mir.deinit(gpa);
-
-            if (mir.errors().len > 0) {
-                for (mir.errors()) |err| {
-                    const span = ast.nodeSpan(err.node);
-                    const message = mir.string(err.message);
-                    try writeError(out, message, span, path, src);
-                }
-
-                process.exit(1);
-            }
-
-            if (builtin.mode == .Debug) {
-                try out.writeAll("------ MIR -------\n");
-                try out.writeAll("main:\n");
-                for (mir.rootNodes()) |instr| {
-                    const data = mir.instrData(instr);
-                    try out.print("{d}. {s}\t{d}, {d}\n", .{
-                        instr,
-                        @tagName(mir.instrTag(instr)),
-                        data.lhs,
-                        data.rhs,
-                    });
-                }
-
-                try out.writeAll("\nother:\n0. <root>\n");
-                for (1..mir.instrs.len) |instr| {
-                    const tag = mir.instrTag(@intCast(instr));
-                    const data = mir.instrData(@intCast(instr));
-                    try out.print("{d}. {s}\t{d}, {d}\n", .{
-                        instr,
-                        @tagName(tag),
-                        data.lhs,
-                        data.rhs,
-                    });
-                }
-            }
-
-            //const pre_comptime: time.Instant = try .now();
-
-            // var ir = try build(gpa, path);
-            //             defer ir.deinit(gpa);
-
-            // const ns = (try time.Instant.now()).since(pre_comptime);
-            // try io.getStdOut().writer().print(
-            //     "\x1b[2mCompilation finished in {d:.3} s\x1b[m\n",
-            //     .{@as(f64, @floatFromInt(ns)) / time.ns_per_s},
-            // );
-
-            // var vm: Vm = try .init(gpa, &ir, .{});
-            // defer vm.deinit();
-
-            // vm.run();
-        },
-        .help => {
-            log.info(help, .{program});
-        },
+        }
     }
 }
-
-// fn build(gpa: mem.Allocator, path: []const u8) !Ir {
-//     const src = try fs.cwd().readFileAllocOptions(
-//         gpa,
-//         path,
-//         math.maxInt(u32),
-//         null,
-//         1,
-//         0,
-//     );
-//     defer gpa.free(src);
-//
-//     var ast = try Parser.parse(gpa, src);
-//     defer ast.deinit(gpa);
-//
-//     const out = io.getStdOut().writer();
-//
-//     if (builtin.mode == .Debug) {
-//         try out.writeAll("----- TOKENS ------\n");
-//         for (ast.tokens.items(.tag), 0..) |token_tag, i| {
-//             try out.print("{d}. {s}\n", .{ i, @tagName(token_tag) });
-//         }
-//     }
-//
-//     if (ast.errors.len > 0) {
-//         for (ast.errors) |err| {
-//             const span = ast.tokenSpan(err.token);
-//             try writeError(out, err.message, span, path, src);
-//         }
-//
-//         process.exit(1);
-//     }
-//
-//     if (builtin.mode == .Debug) {
-//         try out.writeAll("------ AST -------\n");
-//         for (ast.rootNodes(), 0..) |node, i| {
-//             try out.print("{d}. {s}\n", .{ i, @tagName(ast.nodeTag(node)) });
-//         }
-//     }
-//
-//     const ir = try Emitter.emit(gpa, &ast);
-//     if (ir.errorSlice()) |errors| {
-//         for (errors) |err| {
-//             const span = ast.nodeSpan(err.node);
-//             const message = ir.string(err.message);
-//             try writeError(out, message, span, path, src);
-//         }
-//
-//         process.exit(1);
-//     }
-//
-//     if (builtin.mode == .Debug) {
-//         try out.writeAll("------ IR -------\n");
-//         for (0..ir.instrs.len) |i| {
-//             const instr = ir.instrs.get(i);
-//             try out.print("{d}. {s} {d}\n", .{ i, @tagName(instr.tag), instr.data });
-//         }
-//     }
-//
-//     return ir;
-// }
-//
 
 fn writeError(
     writer: anytype,

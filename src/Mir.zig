@@ -1,5 +1,6 @@
 const std = @import("std");
 const mem = std.mem;
+const math = std.math;
 const meta = std.meta;
 
 const assert = std.debug.assert;
@@ -34,6 +35,10 @@ pub const ExtraIndex = enum(u32) {
     ret_type,
 
     _,
+};
+
+const Ref = enum(u32) {
+    none = math.maxInt(u32),
 };
 
 pub const Instr = struct {

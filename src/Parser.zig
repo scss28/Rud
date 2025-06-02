@@ -228,7 +228,7 @@ fn nextSingleLeaf(self: *Parser) (mem.Allocator.Error || error{Syntax})!Node.Ind
             .data = undefined,
         }),
         .at => {
-            self.index += 1;
+            _ = self.eatTokenAny();
             const identifier = try self.assertToken(.identifier);
 
             _ = try self.assertToken(.lparen);
