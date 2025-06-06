@@ -6,15 +6,14 @@ const heap = std.heap;
 
 const assert = std.debug.assert;
 
+const Ast = @import("Ast.zig");
 const InternPool = @This();
 
-gpa: mem.Allocator,
-
-values: std.MultiArrayList(Value),
+values: std.MultiArrayList(ComptimeValue),
 numerics: std.ArrayListUnmanaged(usize),
 
 pub fn init(gpa: mem.Allocator) mem.Allocator.Error!InternPool {
-    var values: std.MultiArrayList(Value) = .empty;
+    var values: std.MultiArrayList(ComptimeValue) = .empty;
     try values.ensureUnusedCapacity(
         gpa,
         @typeInfo(Index).@"enum".fields.len,
@@ -22,75 +21,68 @@ pub fn init(gpa: mem.Allocator) mem.Allocator.Error!InternPool {
     values.len = values.capacity;
 
     return .{
-        .gpa = gpa,
         .values = values,
         .numerics = .empty,
     };
 }
 
-pub fn deinit(ip: *InternPool) void {
-    ip.values.deinit(ip.gpa);
-    ip.numerics.deinit(ip.gpa);
+pub fn deinit(ip: *InternPool, gpa: mem.Allocator) void {
+    ip.values.deinit(gpa);
+    ip.numerics.deinit(gpa);
 
     ip.* = undefined;
 }
 
-pub fn addInt(ip: *InternPool, int: anytype) mem.Allocator.Error!Index {
-    const T = @TypeOf(int);
-    switch (T) {
-        i32 => {
-            return ip.addValue(.{
-                .tag = .i32,
-                .data = @bitCast(int),
-            });
-        },
-        else => unreachable,
-    }
-}
-
-pub fn getInt(ip: *InternPool, index: Index, T: type) T {
-    switch (T) {
-        i32 => {
-            assert(ip.values.items(.tag) == .i32);
-
-            const data = ip.values.items(.data)[@intFromEnum(index)];
-            return @bitCast(data);
-        },
-        else => unreachable,
-    }
-}
-
-pub fn addBigInt(ip: *InternPool, int: math.big.int.Const) mem.Allocator.Error!Index {
+pub fn addBigInt(
+    ip: *InternPool,
+    gpa: mem.Allocator,
+    int: math.big.int.Const,
+) mem.Allocator.Error!Index {
     const index: u32 = @intCast(ip.numerics.items.len);
-    try ip.numerics.ensureUnusedCapacity(ip.gpa, 1 + int.limbs.len);
+    try ip.numerics.ensureUnusedCapacity(gpa, 1 + int.limbs.len);
 
     ip.numerics.appendAssumeCapacity(int.limbs.len);
     ip.numerics.appendSliceAssumeCapacity(int.limbs);
 
-    return ip.addValue(.{
+    return ip.addValue(gpa, .{
         .tag = if (int.positive) .int_positive else .int_negative,
         .data = index,
     });
 }
 
-fn addValue(ip: *InternPool, value: Value) mem.Allocator.Error!Index {
+pub fn addFn(
+    ip: *InternPool,
+    gpa: mem.Allocator,
+    decl: Ast.Node.Index,
+) mem.Allocator.Error!Index {
+    return ip.addValue(gpa, .{
+        .tag = .@"fn",
+        .data = decl,
+    });
+}
+
+fn addValue(
+    ip: *InternPool,
+    gpa: mem.Allocator,
+    value: ComptimeValue,
+) mem.Allocator.Error!Index {
     const index = ip.values.len;
-    try ip.values.append(ip.gpa, value);
+    try ip.values.append(gpa, value);
 
     return @enumFromInt(index);
 }
 
-pub const Value = struct {
+pub const ComptimeValue = struct {
     tag: Tag,
     data: u32,
 
     pub const Tag = enum {
-        i32,
-
         /// `data` is index into `numerics`
         int_positive,
         /// `data` is index into `numerics`
         int_negative,
+
+        @"fn",
     };
 };
 
@@ -103,6 +95,7 @@ pub const Index = enum(u32) {
     type_static_int,
     type_static_str,
     type_type,
+    type_fn,
     _,
 
     pub fn toType(i: Index, ip: *const InternPool) ?Type {
@@ -137,10 +130,22 @@ pub const Index = enum(u32) {
             else => |index| {
                 const tag = ip.values.items(.tag)[@intFromEnum(index)];
                 return switch (tag) {
-                    .i32 => .i32,
                     .int_positive, .int_negative => .static_int,
+                    .@"fn" => .@"fn",
                 };
             },
+        }
+    }
+
+    pub fn unwrapInt(i: Index, T: type, ip: *const InternPool) T {
+        switch (T) {
+            i32 => {
+                assert(ip.values.items(.tag)[@intFromEnum(i)] == .i32);
+
+                const data = ip.values.items(.data)[@intFromEnum(i)];
+                return @bitCast(data);
+            },
+            else => unreachable,
         }
     }
 
@@ -163,6 +168,11 @@ pub const Index = enum(u32) {
             .limbs = limbs,
         };
     }
+
+    pub fn unwrapFn(i: Index, ip: *const InternPool) Ast.Node.Index {
+        assert(ip.values.items(.tag)[@intFromEnum(i)] == .@"fn");
+        return ip.values.items(.data)[@intFromEnum(i)];
+    }
 };
 
 pub const Type = enum(u32) {
@@ -173,5 +183,6 @@ pub const Type = enum(u32) {
     static_int = @intFromEnum(Index.type_static_int),
     static_str = @intFromEnum(Index.type_static_str),
     type = @intFromEnum(Index.type_type),
+    @"fn" = @intFromEnum(Index.type_fn),
     _,
 };

@@ -13,49 +13,36 @@ string_bytes: []const u8,
 extra_data: []const u32,
 
 pub const ExtraIndex = enum(u32) {
+    none,
     errors,
     max_locals,
     ret_type,
     _,
 };
+
+pub fn ExtraSlice(T: type) type {
+    return enum(u32) {
+        empty,
+        _,
+
+        fn toSlice(s: ExtraSlice(T), r: *const RAst) []const T {
+            const i: u32 = @intFromEnum(s);
+            const len = r.extra_data[i];
+            return @ptrCast(r.extra_data[i + 1 .. i + 1 + len]);
+        }
+    };
+}
+
 pub const StringIndex = enum(u32) { empty, _ };
-
-pub const Error = struct {
-    message: StringIndex,
-    node: Ast.Node.Index,
-};
 pub const Nodes = std.MultiArrayList(Node);
-pub const LocalIndex = u32;
-
-pub const Ref = enum(u32) {
-    _,
-
-    pub fn initNode(node: Node.Index) Ref {
-        return @enumFromInt(@intFromEnum(node));
-    }
-
-    pub inline fn initValue(value: InternPool.Index) Ref {
-        return @enumFromInt(@intFromEnum(value) | (1 << 31));
-    }
-
-    pub inline fn toNode(r: Ref) ?RAst.Node.Index {
-        if (@intFromEnum(r) >> 31 != 0) return null;
-        return @enumFromInt(@as(u31, @truncate(@intFromEnum(r))));
-    }
-
-    pub inline fn toValue(r: Ref) ?InternPool.Index {
-        if (@intFromEnum(r) >> 31 == 0) return null;
-        return @enumFromInt(@as(u31, @truncate(@intFromEnum(r))));
-    }
-};
 
 pub const Node = struct {
     tag: Tag,
     data: Data,
 
     pub const Tag = enum {
-        get,
-        set,
+        arg,
+        i32,
 
         addi32,
         subi32,
@@ -69,25 +56,26 @@ pub const Node = struct {
         powf32,
         divf32,
 
+        block,
         call,
         ret,
+
+        exit,
     };
 
     pub const Data = union {
-        root: struct { start: u32, end: u32 },
-        ref: Ref,
-        local_index: LocalIndex,
-        set: struct {
-            local: LocalIndex,
-            ref: Ref,
-        },
+        block: ExtraSlice(Index),
+
+        i32: i32,
+        arg: u32,
+        node: Index,
         binop: struct {
-            lhs: Ref,
-            rhs: Ref,
+            lhs: Index,
+            rhs: Index,
         },
         call: struct {
-            args: ExtraIndex,
-            expr: Ref,
+            args: ExtraSlice(Index),
+            body: Index,
         },
     };
 
@@ -98,19 +86,6 @@ pub fn deinit(r: *RAst, gpa: mem.Allocator) void {
     r.nodes.deinit(gpa);
     gpa.free(r.string_bytes);
     gpa.free(r.extra_data);
-}
-
-pub fn errors(r: *const RAst) []const Error {
-    const index = r.extra_data[@intFromEnum(ExtraIndex.errors)];
-    if (index == 0) return &.{};
-
-    const len = r.extra_data[index];
-    const ptr: [*]const Error = @ptrCast(r.extra_data[index + 1 ..].ptr);
-    return ptr[0..len];
-}
-
-pub inline fn string(r: *const RAst, index: StringIndex) []const u8 {
-    return mem.sliceTo(r.string_bytes[@intFromEnum(index)..], 0);
 }
 
 pub inline fn maxLocals(r: *const RAst) u32 {
@@ -130,6 +105,6 @@ pub inline fn nodeData(r: *const RAst, node: Node.Index) Node.Data {
 }
 
 pub fn rootNodes(r: *const RAst) []const Node.Index {
-    const root = r.nodes.items(.data)[0].root;
-    return @ptrCast(r.extra_data[root.start..root.end]);
+    const root = r.nodes.items(.data)[r.nodes.len - 1].block;
+    return root.toSlice(r);
 }

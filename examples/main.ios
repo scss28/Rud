@@ -4,10 +4,6 @@
 # a := @arg(0)
 # b := @arg(1)
  
- 
-# sum := fn (a, b) a + b
 # ret sum(a, b)
 a := @arg(0)
-b := @arg(1)
-
-ret a + b * 20
+ret @run("sum.ios", 1, a)

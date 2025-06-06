@@ -12,10 +12,16 @@ const heap = std.heap;
 const log = std.log;
 const builtin = @import("builtin");
 
-const Parser = @import("Parser.zig");
-const InternPool = @import("InternPool.zig");
-const Resolver = @import("Resolver.zig");
-const Span = @import("Span.zig");
+pub const Ast = @import("Ast.zig");
+pub const Parser = @import("Parser.zig");
+
+pub const RAst = @import("RAst.zig");
+const Sema = @import("Sema.zig");
+
+pub const Vm = @import("Vm.zig");
+
+pub const InternPool = @import("InternPool.zig");
+pub const Span = @import("Span.zig");
 
 pub fn main() !void {
     var gpa_state = if (debug.runtime_safety) heap.DebugAllocator(.{}).init else {};
@@ -29,138 +35,138 @@ pub fn main() !void {
     defer args.deinit();
 
     _ = args.skip();
-    const path = args.next() orelse {
+    const path: []const u8 = args.next() orelse {
         log.err("expected a path argument", .{});
-        return;
-    };
-
-    const src = try fs.cwd().readFileAllocOptions(
-        gpa,
-        path,
-        math.maxInt(u32),
-        null,
-        1,
-        0,
-    );
-    defer gpa.free(src);
-
-    var ast = try Parser.parse(gpa, src);
-    defer ast.deinit(gpa);
-
-    const out = io.getStdOut().writer();
-    if (builtin.mode == .Debug) {
-        try out.writeAll("\nTokens:\n");
-        for (ast.tokens.items(.tag), 0..) |token_tag, i| {
-            try out.print("{d}.\t{s}\n", .{ i, @tagName(token_tag) });
-        }
-    }
-
-    if (ast.errors.len > 0) {
-        for (ast.errors) |err| {
-            const span = ast.tokenSpan(err.token);
-            try writeError(out, err.message, span, path, src);
-        }
-
         process.exit(1);
-    }
-
-    if (builtin.mode == .Debug) {
-        try out.writeAll("\nAst:\n");
-        for (ast.rootNodes(), 0..) |node, i| {
-            try out.print("{d}.\t{s}\n", .{ i, @tagName(ast.nodeTag(node)) });
-        }
-    }
-
-    var ip: InternPool = try .init(gpa);
-    defer ip.deinit();
-
-    var rast = try Resolver.resolve(gpa, &ast, &ip, &.{ .i32, .i32 });
-    defer rast.deinit(gpa);
-
-    if (rast.errors().len > 0) {
-        for (rast.errors()) |err| {
-            const span = ast.nodeSpan(err.node);
-            const message = rast.string(err.message);
-            try writeError(out, message, span, path, src);
-        }
-
-        process.exit(1);
-    }
-
-    if (builtin.mode == .Debug) {
-        try out.writeAll("\nRAst:\n");
-        for (rast.rootNodes()) |node| {
-            try out.print("{d}.\t{s}\n", .{
-                @intFromEnum(node),
-                @tagName(rast.nodeTag(node)),
-            });
-        }
-
-        try out.writeAll("\n0.\troot\n");
-        for (1..rast.nodes.len) |node| {
-            const tag = rast.nodeTag(@enumFromInt(node));
-            try out.print(
-                "{d}.\t{s}\n",
-                .{
-                    node,
-                    @tagName(tag),
-                },
-            );
-        }
-    }
-}
-
-fn writeError(
-    writer: anytype,
-    message: []const u8,
-    span: Span,
-    path: []const u8,
-    src: [:0]const u8,
-) !void {
-    const loc = span.loc(src);
-
-    try writer.print("\x1b[1;91merror\x1b[m \x1b[1m{s}:{d}:{d}\x1b[m:\n", .{
-        path,
-        loc.line,
-        loc.char,
-    });
-
-    var line_start = span.start;
-    while (line_start > 0) switch (src[line_start - 1]) {
-        '\n' => break,
-        else => line_start -= 1,
     };
 
-    var line_end = span.end;
-    while (line_end < src.len) switch (src[line_end]) {
-        '\n', 0 => break,
-        else => line_end += 1,
-    };
+    var file_path = path;
+    var arg_types: std.ArrayListUnmanaged(InternPool.Type) = .empty;
+    defer arg_types.deinit(gpa);
 
-    const offset = fmt.count("{d}", .{loc.line});
-    if (line_start != 0) {
-        var previous_line_start = line_start - 1;
-        while (line_start > 0) switch (src[previous_line_start - 1]) {
-            '\n' => break,
-            else => previous_line_start -= 1,
+    if (mem.indexOfScalar(u8, path, '(')) |lp| {
+        var end = lp;
+        if (path[lp + 1] != ')') while (true) {
+            if (path[end] == ')') break;
+            end += 1;
+
+            var start = end;
+            while (path[start] == ' ') {
+                start += 1;
+            }
+
+            end = start;
+            while (path[end] != ',' and path[end] != ')') end += 1;
+
+            const ty = path[start..end];
+            if (mem.eql(u8, ty, "i32")) {
+                try arg_types.append(gpa, .i32);
+            } else {
+                log.err("'{s}' not a valid arg type", .{ty});
+                process.exit(1);
+            }
         };
 
-        for (0..offset) |_| try writer.writeByte(' ');
-
-        try writer.print("\x1b[2m |\x1b[m {s}\n", .{
-            src[previous_line_start .. line_start - 1],
-        });
+        file_path = path[0..lp];
     }
 
-    try writer.print("\x1b[2m{d} |\x1b[m {s}\n", .{
-        loc.line,
-        src[line_start..line_end],
-    });
+    var res = try Sema.analyze(gpa, fs.cwd(), file_path, arg_types.items);
+    defer res.deinit(gpa);
 
-    for (0..offset + 3) |_| try writer.writeByte(' ');
-    for (line_start..span.start) |_| try writer.writeByte(' ');
+    if (res.errors.len != 0) {
+        const writer = io.getStdOut().writer();
+        for (res.errors) |e| {
+            const message = e.messageSlice(res);
+            const src = e.file.ast.src;
+            const file_name = e.file.name;
 
-    try writer.writeAll("\x1b[33;1m");
-    for (span.start..span.end) |_| try writer.writeByte('^');
-    try writer.print(" \x1b[0;1m{s}\x1b[m\n\n", .{message});
+            const span = e.span();
+            const loc = span.loc(src);
+
+            try writer.print("\x1b[1;91merror\x1b[m \x1b[1m{s}:{d}:{d}\x1b[m:\n", .{
+                file_name,
+                loc.line,
+                loc.char,
+            });
+
+            var line_start = span.start;
+            while (line_start > 0) switch (src[line_start - 1]) {
+                '\n' => break,
+                else => line_start -= 1,
+            };
+
+            var line_end = span.end;
+            while (line_end < src.len) switch (src[line_end]) {
+                '\n', 0 => break,
+                else => line_end += 1,
+            };
+
+            const offset = fmt.count("{d}", .{loc.line});
+            if (line_start != 0) {
+                var previous_line_start = line_start - 1;
+                while (line_start > 0) switch (src[previous_line_start - 1]) {
+                    '\n' => break,
+                    else => previous_line_start -= 1,
+                };
+
+                for (0..offset) |_| try writer.writeByte(' ');
+
+                try writer.print("\x1b[2m |\x1b[m {s}\n", .{
+                    src[previous_line_start .. line_start - 1],
+                });
+            }
+
+            try writer.print("\x1b[2m{d} |\x1b[m {s}\n", .{
+                loc.line,
+                src[line_start..line_end],
+            });
+
+            for (0..offset + 3) |_| try writer.writeByte(' ');
+            for (line_start..span.start) |_| try writer.writeByte(' ');
+
+            try writer.writeAll("\x1b[33;1m");
+            for (span.start..span.end) |_| try writer.writeByte('^');
+            try writer.print(" \x1b[0;1m{s}\x1b[m\n\n", .{message});
+        }
+
+        process.exit(1);
+    }
+
+    const rast = res.rast;
+    for (rast.rootNodes()) |node| {
+        log.info("{s}", .{@tagName(rast.nodeTag(node))});
+    }
+
+    // var vm_ir: Vm.Ir = try .emit(gpa, &rast, &ip);
+    //     defer vm_ir.deinit(gpa);
+
+    // if (builtin.mode == .Debug) {
+    //     try out.writeAll("\nIr:\n");
+    //     for (vm_ir.instrs.items(.tag), 0..) |tag, i| {
+    //         try out.print("{d}.\t{s}\n", .{ i, @tagName(tag) });
+    //     }
+    // }
+
+    // var stack_buf: [64]usize = undefined;
+    // var locals_buf: [64]usize = undefined;
+    // var call_stack_buf: [64]u32 = undefined;
+
+    // locals_buf[0] = @as(u32, @bitCast(@as(i32, 5)));
+    // locals_buf[1] = @as(u32, @bitCast(@as(i32, 5)));
+
+    // var vm: Vm = .init(&vm_ir, &stack_buf, &locals_buf, &call_stack_buf);
+    // while (vm.next()) {}
+
+    // switch (rast.retType()) {
+    //     .i32 => {
+    //         const int: i32 = @bitCast(@as(u32, @truncate(stack_buf[0])));
+    //         std.debug.print("{d}\n", .{int});
+    //     },
+    //     .f32 => {
+    //         const float: f32 = @bitCast(@as(u32, @truncate(stack_buf[0])));
+    //         std.debug.print("{d}\n", .{float});
+    //     },
+    //     .none => {},
+    //     else => unreachable,
+    // }
 }
