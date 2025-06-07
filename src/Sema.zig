@@ -382,7 +382,7 @@ fn analyzeBlock(
         if (ref_ty != .none) {
             try s.appendError(
                 .{ .node = node },
-                "value of type {s} not discarded",
+                "value of type '{s}' ignored",
                 .{@tagName(ref_ty)},
             );
 
@@ -418,8 +418,24 @@ fn analyzeNode(
                 else => unreachable, // a literal_int is always a valid integer
             };
 
-            const index = try s.ip.addBigInt(s.gpa, big_int.toConst());
-            return .initValue(index);
+            const value = try s.ip.addBigInt(s.gpa, big_int.toConst());
+            return .initValue(value);
+        },
+        .literal_str => |literal| {
+            const value = try s.ip.addStr(s.gpa, literal);
+            return .initValue(value);
+        },
+        .literal_float => |literal| {
+            var real: math.big.Rational = try .init(s.gpa);
+            defer real.deinit();
+
+            real.setFloatString(literal) catch |err| switch (err) {
+                error.OutOfMemory => |oom| return oom,
+                else => unreachable, // a literal_float is always a valid float
+            };
+
+            const value = try s.ip.addReal(s.gpa, real);
+            return .initValue(value);
         },
         .identifier => |identifier| {
             var scope: *Scope = s.current_scope;
@@ -451,9 +467,9 @@ fn analyzeNode(
             const rhs_ty = s.refType(rhs_ref);
 
             var res: math.big.int.Mutable = undefined;
-            if (lhs_ty == .static_int and rhs_ty == .static_int) {
-                const lhs = lhs_ref.toValue().?.unwrapStaticInt(&s.ip);
-                const rhs = rhs_ref.toValue().?.unwrapStaticInt(&s.ip);
+            if (lhs_ty == .int and rhs_ty == .int) {
+                const lhs = lhs_ref.toValue().?.unwrapBigInt(&s.ip);
+                const rhs = rhs_ref.toValue().?.unwrapBigInt(&s.ip);
 
                 if (tag == .pow) {
                     if (!rhs.positive) {
@@ -525,24 +541,72 @@ fn analyzeNode(
                     }
                 }
 
-                const index = try s.ip.addBigInt(s.gpa, res.toConst());
-                return .initValue(index);
+                const value = try s.ip.addBigInt(s.gpa, res.toConst());
+                return .initValue(value);
+            }
+
+            if (lhs_ty == .real and tag != .pow) {
+                if (rhs_ty == .real) {
+                    // TODO: avoid allocating
+                    var lhs = try lhs_ref.toValue().?.unwrapRealDupe(s.arena(), &s.ip);
+                    const rhs = try rhs_ref.toValue().?.unwrapRealDupe(s.arena(), &s.ip);
+
+                    return s.addRealBinopRef(tag, &lhs, rhs);
+                }
+
+                if (rhs_ty == .int) {
+                    var lhs = try lhs_ref.toValue().?.unwrapRealDupe(s.arena(), &s.ip);
+                    const rhs: InternPool.Real = .{
+                        .p = try rhs_ref.toValue().?
+                            .unwrapBigInt(&s.ip)
+                            .toManaged(s.arena()),
+                        .q = try .initSet(s.arena(), 1),
+                    };
+                    return s.addRealBinopRef(tag, &lhs, rhs);
+                }
+
+                if (rhs_ty == .f32) {
+                    const lhs_node = try rhs_ref.convertToNode(s, binop.lhs);
+                    const rhs_node = rhs_ref.toNode().?;
+                    return s.addBinopRef(.f32, tag, lhs_node, rhs_node);
+                }
+            }
+
+            if (rhs_ty == .real and tag != .pow) {
+                if (lhs_ty == .int) {
+                    var lhs: InternPool.Real = .{
+                        .p = try lhs_ref.toValue().?
+                            .unwrapBigInt(&s.ip)
+                            .toManaged(s.arena()),
+                        .q = try .initSet(s.arena(), 1),
+                    };
+                    const rhs = try rhs_ref.toValue().?.unwrapRealDupe(s.arena(), &s.ip);
+                    return s.addRealBinopRef(tag, &lhs, rhs);
+                }
+
+                if (lhs_ty == .f32) {
+                    const lhs_node = lhs_ref.toNode().?;
+                    const rhs_node = try rhs_ref.convertToNode(s, binop.rhs);
+                    return s.addBinopRef(.f32, tag, lhs_node, rhs_node);
+                }
             }
 
             if (lhs_ty == .i32) {
                 const lhs_node = lhs_ref.toNode().?;
                 if (rhs_ty == .i32) {
                     const rhs_node = rhs_ref.toNode().?;
-                    return s.addi32BinopRef(
+                    return s.addBinopRef(
+                        .i32,
                         tag,
                         lhs_node,
                         rhs_node,
                     );
                 }
 
-                if (rhs_ty == .static_int) {
+                if (rhs_ty == .int) {
                     const rhs_node = try rhs_ref.convertToNode(s, binop.rhs);
-                    return s.addi32BinopRef(
+                    return s.addBinopRef(
+                        .i32,
                         tag,
                         lhs_node,
                         rhs_node,
@@ -552,9 +616,10 @@ fn analyzeNode(
 
             if (rhs_ty == .i32) {
                 const rhs_node = rhs_ref.toNode().?;
-                if (lhs_ty == .static_int) {
+                if (lhs_ty == .int) {
                     const lhs_node = try lhs_ref.convertToNode(s, binop.lhs);
-                    return s.addi32BinopRef(
+                    return s.addBinopRef(
+                        .i32,
                         tag,
                         lhs_node,
                         rhs_node,
@@ -596,14 +661,14 @@ fn analyzeNode(
 
                 const arg_ref = try s.analyzeNode(call.args[0]);
                 const ty = s.refType(arg_ref);
-                if (ty != .static_int) {
+                if (ty != .int) {
                     return s.throwSrcNode(call.args[0], "expected {s} got {s}", .{
-                        @tagName(InternPool.Type.static_int),
+                        @tagName(InternPool.Type.int),
                         @tagName(ty),
                     });
                 }
 
-                const int = arg_ref.toValue().?.unwrapStaticInt(&s.ip);
+                const int = arg_ref.toValue().?.unwrapBigInt(&s.ip);
                 const index = int.toInt(u32) catch {
                     return s.throwSrcNode(
                         call.args[0],
@@ -664,17 +729,14 @@ fn analyzeNode(
                 s.current_scope = &root_scope.tag;
                 defer s.current_scope = old_scope;
 
-                return s.analyzeFile(
-                    s.file.cwd,
-                    literal[1 .. literal.len - 1],
-                    args,
-                ) catch |err| switch (err) {
+                const path = literal[1 .. literal.len - 1];
+                return s.analyzeFile(s.file.cwd, path, args) catch |err| switch (err) {
                     error.Fail, error.OutOfMemory => |e| e,
                     else => |e| {
                         return s.throwSrcNode(
                             node,
                             "unable to open file '{s}': {any}",
-                            .{ literal, e },
+                            .{ path, e },
                         );
                     },
                 };
@@ -759,6 +821,24 @@ fn analyzeNode(
     }
 }
 
+fn addRealBinopRef(
+    s: *Sema,
+    tag: Ast.Node.Tag,
+    lhs: *InternPool.Real,
+    rhs: InternPool.Real,
+) AnalysisError!Ref {
+    switch (tag) {
+        .add => try lhs.add(lhs.*, rhs),
+        .sub => try lhs.sub(lhs.*, rhs),
+        .mul => try lhs.mul(lhs.*, rhs),
+        .div => try lhs.div(lhs.*, rhs),
+        else => unreachable,
+    }
+
+    const value = try s.ip.addReal(s.gpa, lhs.*);
+    return .initValue(value);
+}
+
 fn analyzeRetExpr(
     s: *Sema,
     src_node: Ast.Node.Index,
@@ -787,22 +867,22 @@ fn analyzeRetExpr(
     });
 }
 
-fn addi32BinopRef(
+fn addBinopRef(
     s: *Sema,
+    comptime ty: InternPool.Type,
     tag: Ast.Node.Tag,
     lhs: RAst.Node.Index,
     rhs: RAst.Node.Index,
 ) mem.Allocator.Error!Ref {
-    const node_tag: RAst.Node.Tag = switch (tag) {
-        .add => .addi32,
-        .sub => .subi32,
-        .mul => .muli32,
-        .pow => .powi32,
-        .div => .divi32,
+    const node_tag = switch (tag) {
+        inline .add, .sub, .mul, .pow, .div => |t| @field(
+            RAst.Node.Tag,
+            @tagName(t) ++ @tagName(ty),
+        ),
         else => unreachable,
     };
 
-    return s.addNodeRef(.i32, .{
+    return s.addNodeRef(ty, .{
         .tag = node_tag,
         .data = .{ .binop = .{
             .lhs = lhs,
@@ -868,8 +948,8 @@ fn convertValueToNode(
     value: InternPool.Index,
 ) (error{Fail} || mem.Allocator.Error)!RAst.Node.Index {
     switch (value.ty(&s.ip)) {
-        .static_int => {
-            const int = value.unwrapStaticInt(&s.ip);
+        .int => {
+            const int = value.unwrapBigInt(&s.ip);
             const int_i32 = int.toInt(i32) catch {
                 return s.throwSrcNode(
                     src_node,
@@ -886,7 +966,19 @@ fn convertValueToNode(
                 .data = .{ .i32 = int_i32 },
             });
         },
-        .static_str => unreachable, // TODO
+        .real => {
+            // TODO: try to not allocate here...
+            const real = try value.unwrapRealDupe(s.arena(), &s.ip);
+            const float = real.toFloat(f32) catch |err| switch (err) {
+                error.OutOfMemory => |oom| return oom,
+            };
+
+            return s.addNode(.f32, .{
+                .tag = .f32,
+                .data = .{ .f32 = float },
+            });
+        },
+        .str => unreachable, // TODO
         .i32, .f32 => unreachable, // i32 and f32 comptime values cannot exist
         else => |ty| return s.throwSrcNode(
             src_node,

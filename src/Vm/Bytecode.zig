@@ -8,8 +8,6 @@ const InternPool = root.InternPool;
 
 const Bytecode = @This();
 
-code: []const u8,
-
 pub const OpCode = union(enum) {
     pub const Binop = struct {
         r: u8,
@@ -31,7 +29,7 @@ pub const OpCode = union(enum) {
     exit,
 };
 
-pub fn emit(gpa: mem.Allocator, rast: *const RAst, ip: *const InternPool) Bytecode {
+pub fn emit(gpa: mem.Allocator, rast: *const RAst, ip: *const InternPool) ![]const u8 {
     var e: Emitter = .{
         .gpa = gpa,
         .rast = rast,
@@ -41,6 +39,8 @@ pub fn emit(gpa: mem.Allocator, rast: *const RAst, ip: *const InternPool) Byteco
     };
 
     for (rast.rootNodes()) |node| e.emitNode(0, node);
+
+    return try e.code.toOwnedSlice(gpa);
 }
 
 const Emitter = struct {
@@ -49,32 +49,7 @@ const Emitter = struct {
     ip: *const InternPool,
     code: std.ArrayListUnmanaged(u8),
 
-    register: u4,
-    stack_ptr: u4,
-
-    fn emitRef(
-        e: *Emitter,
-        r: u8,
-        ref: RAst.Ref,
-    ) mem.Allocator.Error!void {
-        if (ref.toValue()) |value| {
-            switch (value.ty(e.ip)) {
-                .i32 => {
-                    const int = value.unwrapInt(i32, e.ip);
-                    try e.encodeOpCode(.{ .movei32 = .{
-                        .r = r,
-                        .value = @as(u32, @bitCast(int)),
-                    } });
-                },
-                .f32 => unreachable, // TODO
-                else => unreachable,
-            }
-
-            return;
-        }
-
-        e.emitNode(r, ref.toNode().?);
-    }
+    register: u8,
 
     fn emitNode(
         e: *Emitter,
@@ -82,6 +57,12 @@ const Emitter = struct {
         node: RAst.Node.Index,
     ) mem.Allocator.Error!void {
         switch (e.rast.nodeTag(node)) {
+            .i32 => {
+                const int = e.rast.nodeData().i32;
+                try e.encodeOpCode(.{
+                    .tag = .load,
+                });
+            },
             inline .addi32, .subi32, .muli32, .powi32, .divi32 => |tag| {
                 const binop = e.rast.nodeData(node).binop;
 
@@ -111,7 +92,7 @@ const Emitter = struct {
                     },
                 });
             },
-            inline .ret, .exit => |tag| {},
+            inline .ret, .exit => |_| {},
             else => unreachable, // TODO
         }
     }

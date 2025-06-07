@@ -43,6 +43,7 @@ pub const Node = struct {
     pub const Tag = enum {
         arg,
         i32,
+        f32,
 
         addi32,
         subi32,
@@ -67,6 +68,8 @@ pub const Node = struct {
         block: ExtraSlice(Index),
 
         i32: i32,
+        f32: f32,
+        str: StringIndex,
         arg: u32,
         node: Index,
         binop: struct {
